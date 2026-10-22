@@ -37,7 +37,11 @@ fun CaptureScreen(
         if (status.running && status.meetingId == meetingId) {
             Button(onClick = { MeetingService.stop(context) }) { Text("停止录音") }
         } else {
-            Button(onClick = { MeetingService.start(context, meetingId) }) { Text("开始录音") }
+            // 其他会议正在录音时不提供"开始录音"，防止跨会议抢占（服务端另有硬防护）
+            Button(
+                onClick = { MeetingService.start(context, meetingId) },
+                enabled = !status.running || status.meetingId == meetingId,
+            ) { Text("开始录音") }
         }
         TextButton(onClick = onFinished) { Text("结束会议") }
     }

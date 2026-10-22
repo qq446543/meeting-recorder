@@ -2192,9 +2192,13 @@ import com.meetnote.recorder.data.DefaultMeetingRepository
 import com.meetnote.recorder.data.FileStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Timer
 import java.util.TimerTask
@@ -2207,6 +2211,7 @@ class MeetingService : Service() {
     private var meetingId: Long = 0L
     private var audioFile: File? = null
     private var startedAtElapsed: Long = 0L
+    private var persistJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -2226,6 +2231,14 @@ class MeetingService : Service() {
     private fun handleStart(id: Long) {
         if (id <= 0) {
             stopSelf()
+            return
+        }
+        // 防重复启动：已在录音时，同会议幂等返回；跨会议拒绝且绝不触碰现有录音
+        if (recorder.isRunning()) {
+            if (id != meetingId) {
+                // 不覆盖 meetingId/audioFile、不重启 recorder、不 stopSelf（会中断活录音）
+                RecordingState.onError("麦克风正在录制其他会议")
+            }
             return
         }
         meetingId = id
@@ -2270,12 +2283,15 @@ class MeetingService : Service() {
             dao = AppDatabase.get(this).meetingDao(),
             fileStore = FileStore(filesDir),
         )
-        scope.launch {
-            repository.finishMeeting(
-                id = meetingId,
-                audioPath = audioFile?.absolutePath,
-                durationMs = duration,
-            )
+        persistJob = scope.launch {
+            // NonCancellable：服务销毁时的 scope.cancel() 不允许掐掉 finishMeeting 落库
+            withContext(NonCancellable) {
+                repository.finishMeeting(
+                    id = meetingId,
+                    audioPath = audioFile?.absolutePath,
+                    durationMs = duration,
+                )
+            }
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -2291,14 +2307,20 @@ class MeetingService : Service() {
                 dao = AppDatabase.get(this).meetingDao(),
                 fileStore = FileStore(filesDir),
             )
-            scope.launch {
-                repository.finishMeeting(
-                    id = meetingId,
-                    audioPath = audioFile?.absolutePath,
-                    durationMs = duration,
-                )
+            // runBlocking：onDestroy 是同步回调，兜底写入必须在 scope.cancel() 之前真正落库；
+            // NonCancellable 保证任何取消路径都掐不掉这条落库（核心契约：录音时长绝不丢失）。
+            runBlocking {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    repository.finishMeeting(
+                        id = meetingId,
+                        audioPath = audioFile?.absolutePath,
+                        durationMs = duration,
+                    )
+                }
             }
         }
+        // 等 handleStop 启动的落库写入完成后再取消 scope，防止 cancel 掐掉尚未跑完的 finishMeeting
+        runBlocking { persistJob?.join() }
         scope.cancel()
         super.onDestroy()
     }
@@ -2375,6 +2397,20 @@ class MeetingService : Service() {
             android:name=".audio.MeetingService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+```
+
+`ui/capture/CaptureScreen.kt` 在占位页 Column 内加入开始/停止按钮（Task 9 整合）：
+
+```kotlin
+        if (status.running && status.meetingId == meetingId) {
+            Button(onClick = { MeetingService.stop(context) }) { Text("停止录音") }
+        } else {
+            // 其他会议正在录音时不提供"开始录音"，防止跨会议抢占（服务端另有硬防护）
+            Button(
+                onClick = { MeetingService.start(context, meetingId) },
+                enabled = !status.running || status.meetingId == meetingId,
+            ) { Text("开始录音") }
+        }
 ```
 
 - [ ] **Step 6: 构建验证**
