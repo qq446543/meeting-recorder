@@ -24,6 +24,14 @@
 - 每个任务结束必须 `git add` + `git commit`，提交信息用 `feat:` / `fix:` / `test:` / `build:` 前缀。
 - 构建命令统一用 `gradlew.bat`（Windows），工作目录为项目根 `MeetingRecorder/`。
 
+### Task 1 登记：依赖版本决议与机器构建约束（2026-10-22）
+
+以下为 Task 1 实际落地并已核实的权威值，后续任务一律以此为准；任何 brief 片段若与本节冲突，**以本节为准**：
+
+- **Compose BOM 最终版本 `2026.06.01`**（原计划 `2026.09.00`）。原因：2026.09.00 内的 `ui-android:1.12.1` AAR 元数据声明 `minCompileSdk=37` + `minAGP=9.1.0`，与 compileSdk 36 / AGP 8.13.2 硬约束冲突（构建时报错实证）；已从 Google Maven 核实 2026.06.01（Compose 1.11.x，`minCompileSdk=35` / `minAGP=8.6.0`）可用且构建通过。
+- **KSP 最终版本 `2.3.12`**（原计划 `2.3.21-2.0.4`）。原因：坐标 `com.google.devtools.ksp:symbol-processing-api:2.3.21-2.0.4` 在 Maven Central 从未发布（404）；KSP 自 2.3.0 起改为不带 Kotlin 后缀的独立版本号。已从 Maven Central 核实 `2.3.12` 存在且与 Kotlin 2.3.21 / Room 2.8.5 KSP 处理器兼容（`kspDebugKotlin` 执行成功）。
+- **机器构建约束（已写入 `gradle.properties`，必须保留）**：仓库路径含非 ASCII 字符（`默认项目`）→ `android.overridePathCheck=true` 必须保留，删除会使 AGP 路径检查失败；本机 pagefile 仅 2 GB → `-Xmx2048m`、`org.gradle.workers.max=1`、`kotlin.compiler.execution.strategy=in-process` 已入 `gradle.properties`，回退默认并发会在 dexing 阶段触发 JVM 提交内存耗尽崩溃。
+
 ## 文件结构总览
 
 ```
