@@ -565,7 +565,7 @@ git commit -m "build: 初始化 Gradle 工程骨架并产出首个 APK"
   - `MeetingDao.observeStats(): Flow<List<MeetingStats>>`、`insertMeeting(m): Long`、`lastPage(meetingId): SlidePage?`、`insertPage(p): Long`、`updatePage(p)`、`observePages(meetingId): Flow<List<SlidePage>>`、`deletePage(id)`、`finishMeeting(id, audioPath, audioDurationMs, endedAt)`、`deleteMeeting(id)`、`meeting(id): Meeting?`、`pageCount(id): Int`
   - `AppDatabase.get(context): AppDatabase`（单例）
   - `FileStore(root: File)`：`meetingDir(id): File`、`pageFile(id, index): File`、`audioFile(id): File`、`deleteMeeting(id): Boolean`、`freeBytes(): Long`
-  - `MeetingRepository(dao, fileStore)`：`observeMeetings(): Flow<List<MeetingStats>>`、`suspend createMeeting(title): Long`、`suspend finishMeeting(id, audioPath, durationMs)`、`suspend deleteMeeting(id)`、`fun observePages(id): Flow<List<SlidePage>>`、`suspend pageCount(id): Int`、`suspend meeting(id): Meeting?`、`suspend registerShot(meetingId, filePath, width, height, similarityToLast: Float): ShotResult`
+  - `MeetingRepository(dao, fileStore)`：`observeMeetings(): Flow<List<MeetingStats>>`、`suspend createMeeting(title): Long`、`suspend finishMeeting(id, audioPath, durationMs)`、`suspend deleteMeeting(id)`、`fun observePages(id): Flow<List<SlidePage>>`、`suspend pageCount(id): Int`、`suspend meeting(id): Meeting?`、`suspend registerShot(meetingId, imageFile, width, height, similarityToLast: Float): ShotResult`
   - `data class ShotResult(val index: Int, val overwritten: Boolean, val captureCount: Int)`
 
 - [ ] **Step 1: 写失败的 DAO 测试**
