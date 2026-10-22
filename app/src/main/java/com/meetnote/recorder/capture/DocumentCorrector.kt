@@ -56,13 +56,18 @@ class DocumentCorrector(
                 Imgproc.Canny(blurred, edges, 50.0, 150.0)
 
                 val contours = ArrayList<MatOfPoint>()
-                Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE)
+                val found = try {
+                    Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE)
 
-                val frameW = detect.cols()
-                val frameH = detect.rows()
-                val found = contours
-                    .sortedByDescending { Imgproc.contourArea(it) }
-                    .firstNotNullOfOrNull { contour -> detectQuad(contour, frameW, frameH) }
+                    val frameW = detect.cols()
+                    val frameH = detect.rows()
+                    contours
+                        .sortedByDescending { Imgproc.contourArea(it) }
+                        .firstNotNullOfOrNull { contour -> detectQuad(contour, frameW, frameH) }
+                } finally {
+                    // 每个轮廓 MatOfPoint 都持有 native 内存，必须在选完后立即释放
+                    contours.forEach { it.release() }
+                }
 
                 if (found == null) {
                     return Correction(source, null, degraded = true, reason = "未检测到屏幕边缘")
@@ -109,18 +114,21 @@ class DocumentCorrector(
         val asFloat = MatOfPoint2f(*contour.toArray())
         val peri = Imgproc.arcLength(asFloat, true)
         val approx = MatOfPoint2f()
+        var convex: MatOfPoint? = null
         try {
             Imgproc.approxPolyDP(asFloat, approx, 0.02 * peri, true)
             val pts = approx.toArray()
             if (pts.size != 4) return null
 
             val quad = QuadMath.orderPoints(pts.map { Point2(it.x.toFloat(), it.y.toFloat()) })
-            if (!Imgproc.isContourConvex(MatOfPoint(*pts))) return null
+            convex = MatOfPoint(*pts)
+            if (!Imgproc.isContourConvex(convex)) return null
             if (!QuadMath.isPlausible(quad, frameW, frameH)) return null
             return quad
         } finally {
             asFloat.release()
             approx.release()
+            convex?.release()
         }
     }
 
