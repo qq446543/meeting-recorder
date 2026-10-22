@@ -25,13 +25,18 @@ import java.io.File
 private class PagesFakeRepo : MeetingRepository {
     val pages = MutableStateFlow<List<SlidePage>>(emptyList())
     var title = "需求评审"
+    var meeting: Meeting? = Meeting(1, title, 1L, endedAt = null)
+    var finishedCalls = mutableListOf<Pair<String?, Long>>()
 
     override fun observeMeetings(): Flow<List<MeetingStats>> = MutableStateFlow(emptyList())
     override fun observePages(meetingId: Long): Flow<List<SlidePage>> = pages
-    override suspend fun meeting(id: Long): Meeting? = Meeting(id, title, 1L)
+    override suspend fun meeting(id: Long): Meeting? = meeting
     override suspend fun pageCount(id: Long): Int = pages.value.size
     override suspend fun createMeeting(title: String): Long = 1L
-    override suspend fun finishMeeting(id: Long, audioPath: String?, durationMs: Long) = Unit
+    override suspend fun finishMeeting(id: Long, audioPath: String?, durationMs: Long) {
+        finishedCalls += audioPath to durationMs
+        meeting = meeting?.copy(endedAt = 1L, audioPath = audioPath, audioDurationMs = durationMs)
+    }
     override suspend fun deleteMeeting(id: Long) = Unit
     override suspend fun deletePage(pageId: Long) = Unit
     override suspend fun registerShot(
@@ -109,5 +114,35 @@ class CaptureViewModelTest {
         val rec: RecordingStatus = vm.ui.value.recording
         assertTrue(rec.running)
         assertEquals(65_000L, rec.elapsedMs)
+    }
+
+    @Test
+    fun `endMeeting writes end time once`() = runBlocking {
+        val repo = PagesFakeRepo()
+        val vm = CaptureViewModel(1L, repo)
+        RecordingState.bind(1L, 0)
+        RecordingState.onStart()
+        RecordingState.onTick(30_000)
+
+        vm.endMeeting()
+
+        assertEquals(1, repo.finishedCalls.size)
+        assertEquals(30_000L, repo.finishedCalls.single().second)
+        assertNotNull(repo.meeting(1L)!!.endedAt)
+
+        // 已经结束过就不要重复写（服务可能已经写过）
+        vm.endMeeting()
+        assertEquals("重复结束不应二次写入", 1, repo.finishedCalls.size)
+    }
+
+    @Test
+    fun `endMeeting is a no-op if service already finished`() = runBlocking {
+        val repo = PagesFakeRepo()
+        repo.meeting = Meeting(1, "已结束", 1L, endedAt = 99L, audioDurationMs = 5_000)
+        val vm = CaptureViewModel(1L, repo)
+
+        vm.endMeeting()
+
+        assertTrue(repo.finishedCalls.isEmpty())
     }
 }

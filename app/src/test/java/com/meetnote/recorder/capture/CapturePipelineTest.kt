@@ -219,4 +219,23 @@ class CapturePipelineTest {
         feedStable(p, startTs = 110_000L, value = 200)
         assertTrue(pictureRequests >= 2)
     }
+
+    @Test
+    fun `manual shutter fires even while the frame is shaking`() {
+        val p = pipeline()
+        // 持续抖动的帧：自动判定永不触发
+        repeat(20) { i -> p.analyze(grid(100 + (i % 2) * 40), i * 33L) }
+        assertEquals(0, pictureRequests)
+
+        p.forceCapture()
+        assertEquals("手动快门必须无视稳定判定", 1, pictureRequests)
+    }
+
+    @Test
+    fun `manual shutter is ignored while a shot is already in flight`() {
+        val p = pipeline()
+        p.forceCapture()
+        p.forceCapture()
+        assertEquals(1, pictureRequests)
+    }
 }

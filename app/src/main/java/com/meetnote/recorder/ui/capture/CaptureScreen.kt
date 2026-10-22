@@ -177,7 +177,11 @@ fun CaptureScreen(
                 title = { Text(state.title, maxLines = 1) },
                 navigationIcon = {
                     IconButton(onClick = onOpenGuide) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        // 录音由前台服务维持，离开拍摄页不会中断录音（spec §12）
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "离开拍摄页（录音继续）",
+                        )
                     }
                 },
                 actions = {
@@ -273,14 +277,27 @@ fun CaptureScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 手动快门：自动漏拍时人工补一张
+                    Button(onClick = { pipeline.forceCapture() }) { Text("手动拍照") }
+
                     OutlinedButton(onClick = { vm.togglePause() }) {
                         Text(if (state.paused) "继续抓拍" else "暂停抓拍")
                     }
-                    Button(onClick = {
-                        MeetingService.stop(context)   // 结束会议必须停止录音（spec §12）
-                        onFinished()
-                    }) { Text("结束会议") }
+
+                    Button(
+                        onClick = {
+                            MeetingService.stop(context)
+                            vm.endMeeting()
+                            onFinished()
+                        },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) { Text("结束会议") }
                 }
             }
         }
