@@ -1,0 +1,73 @@
+package com.meetnote.recorder.ui.capture
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.meetnote.recorder.audio.RecordingState
+import com.meetnote.recorder.audio.RecordingStatus
+import com.meetnote.recorder.capture.OpenCvLoader
+import com.meetnote.recorder.capture.Point2
+import com.meetnote.recorder.capture.Quad
+import com.meetnote.recorder.data.MeetingRepository
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class CaptureUiState(
+    val title: String = "",
+    val statusText: String = "准备中…",
+    val pageCount: Int = 0,
+    val paused: Boolean = false,
+    val recording: RecordingStatus = RecordingStatus(),
+    val quad: Quad? = null,
+    val degraded: Boolean = false,
+    val opencvAvailable: Boolean = false,
+)
+
+class CaptureViewModel(
+    private val meetingId: Long,
+    private val repo: MeetingRepository,
+) : ViewModel() {
+
+    private val _ui = MutableStateFlow(CaptureUiState())
+    val ui: StateFlow<CaptureUiState> = _ui.asStateFlow()
+
+    init {
+        // 同步探测（幂等、失败缓存）：JVM 单测里 System.loadLibrary 失败 → false
+        val opencv = runCatching { OpenCvLoader.isAvailable() }.getOrDefault(false)
+        _ui.update { it.copy(opencvAvailable = opencv) }
+
+        viewModelScope.launch {
+            val m = repo.meeting(meetingId)
+            _ui.update { it.copy(title = m?.title ?: "会议") }
+        }
+        viewModelScope.launch {
+            repo.observePages(meetingId).collect { pages ->
+                _ui.update { it.copy(pageCount = pages.size) }
+            }
+        }
+        viewModelScope.launch {
+            RecordingState.status.collect { rec ->
+                _ui.update { it.copy(recording = rec) }
+            }
+        }
+    }
+
+    /** 暂停/继续抓拍，返回新状态 */
+    fun togglePause(): Boolean {
+        val next = !_ui.value.paused
+        _ui.update { it.copy(paused = next) }
+        return next
+    }
+
+    fun onPipelineStatus(text: String, quad: Quad?, degraded: Boolean) {
+        _ui.update { it.copy(statusText = text, quad = quad, degraded = degraded) }
+    }
+
+    fun refreshPageCount(n: Int) {
+        _ui.update { it.copy(pageCount = n) }
+    }
+
+    fun meetingId(): Long = meetingId
+}

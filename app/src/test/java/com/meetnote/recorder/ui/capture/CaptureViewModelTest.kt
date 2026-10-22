@@ -1,0 +1,113 @@
+package com.meetnote.recorder.ui.capture
+
+import com.meetnote.recorder.audio.RecordingState
+import com.meetnote.recorder.audio.RecordingStatus
+import com.meetnote.recorder.data.MeetingRepository
+import com.meetnote.recorder.data.MeetingStats
+import com.meetnote.recorder.data.Meeting
+import com.meetnote.recorder.data.ShotResult
+import com.meetnote.recorder.data.SlidePage
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.io.File
+
+private class PagesFakeRepo : MeetingRepository {
+    val pages = MutableStateFlow<List<SlidePage>>(emptyList())
+    var title = "需求评审"
+
+    override fun observeMeetings(): Flow<List<MeetingStats>> = MutableStateFlow(emptyList())
+    override fun observePages(meetingId: Long): Flow<List<SlidePage>> = pages
+    override suspend fun meeting(id: Long): Meeting? = Meeting(id, title, 1L)
+    override suspend fun pageCount(id: Long): Int = pages.value.size
+    override suspend fun createMeeting(title: String): Long = 1L
+    override suspend fun finishMeeting(id: Long, audioPath: String?, durationMs: Long) = Unit
+    override suspend fun deleteMeeting(id: Long) = Unit
+    override suspend fun deletePage(pageId: Long) = Unit
+    override suspend fun registerShot(
+        meetingId: Long, imageFile: File, width: Int, height: Int, isSamePage: Boolean,
+    ): ShotResult = ShotResult(1, isSamePage, 1)
+    override suspend fun targetFileFor(meetingId: Long, isSamePage: Boolean): File = File("x")
+    override fun meetingAudioFile(meetingId: Long): File = File("x")
+    override fun freeBytes(): Long = Long.MAX_VALUE
+}
+
+/**
+ * ViewModel 用到 viewModelScope（Dispatchers.Main），需 Robolectric 提供主 Looper
+ * （与 MeetingListViewModelTest 同因同解；plain JUnit 下构造即抛
+ * "Module with the Main dispatcher had failed to initialize"）。
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class CaptureViewModelTest {
+
+    @Before
+    fun setUp() = RecordingState.clear()
+
+    @After
+    fun tearDown() = RecordingState.clear()
+
+    private fun page(id: Long, index: Int) = SlidePage(
+        meetingId = id, index = index, filePath = "/p/$index.jpg",
+        width = 1600, height = 900, createdAt = 1L, updatedAt = 1L,
+    )
+
+    @Test
+    fun `ui state carries meeting title`() {
+        val vm = CaptureViewModel(1L, PagesFakeRepo())
+        assertEquals("需求评审", vm.ui.value.title)
+    }
+
+    @Test
+    fun `page count follows repository pages`() {
+        val repo = PagesFakeRepo()
+        val vm = CaptureViewModel(1L, repo)
+        repo.pages.value = listOf(page(1, 1), page(1, 2))
+        // 页面流是 stateIn，直接再读一次当前值即可（无需等待）
+        vm.refreshPageCount(2)
+        assertEquals(2, vm.ui.value.pageCount)
+    }
+
+    @Test
+    fun `pause toggle flips and persists`() {
+        val vm = CaptureViewModel(1L, PagesFakeRepo())
+        assertFalse(vm.ui.value.paused)
+        assertTrue(vm.togglePause())
+        assertTrue(vm.ui.value.paused)
+        assertFalse(vm.togglePause())
+    }
+
+    @Test
+    fun `pipeline status updates text and quad`() {
+        val vm = CaptureViewModel(1L, PagesFakeRepo())
+        vm.onPipelineStatus("已拍第 3 页", quad = null, degraded = false)
+        assertEquals("已拍第 3 页", vm.ui.value.statusText)
+        assertFalse(vm.ui.value.degraded)
+
+        vm.onPipelineStatus("未检测到屏幕边缘", quad = null, degraded = true)
+        assertTrue(vm.ui.value.degraded)
+        assertNotNull(vm.ui.value.statusText)
+    }
+
+    @Test
+    fun `recording status is mirrored from global state`() {
+        val vm = CaptureViewModel(1L, PagesFakeRepo())
+        RecordingState.bind(1L, 0)
+        RecordingState.onStart()
+        RecordingState.onTick(65_000)
+
+        val rec: RecordingStatus = vm.ui.value.recording
+        assertTrue(rec.running)
+        assertEquals(65_000L, rec.elapsedMs)
+    }
+}
