@@ -4783,8 +4783,10 @@ fun CaptureScreen(
     }
     val missing = needed.filter {
         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-    }
+    }.toSet()
     val cameraGranted = Manifest.permission.CAMERA !in missing
+    // 仅在待授权集合"变化"时自动请求：拒绝后集合不变 → 不再重复弹窗（手动重试会先清空它）
+    var lastRequested by remember { mutableStateOf<Set<String>>(emptySet()) }
     // 授权结果回调 bump tick：无论 granted 还是 denied，都会重新推导 missing
     // （checkSelfPermission 不是快照状态，对话框返回后必须有状态变化驱动重算）
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -4793,7 +4795,10 @@ fun CaptureScreen(
 
     LaunchedEffect(missing.size, permissionTick) {
         if (missing.isNotEmpty()) {
-            permissionLauncher.launch(missing.toTypedArray())
+            if (missing != lastRequested) {
+                lastRequested = missing
+                permissionLauncher.launch(missing.toTypedArray())
+            }
         } else if (!state.recording.running) {
             // 权限齐了就开录音（前台服务，锁屏不断）
             MeetingService.start(context, meetingId)
