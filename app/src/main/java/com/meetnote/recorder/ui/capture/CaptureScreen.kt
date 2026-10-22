@@ -290,9 +290,8 @@ fun CaptureScreen(
 
                     Button(
                         onClick = {
-                            MeetingService.stop(context)
-                            vm.endMeeting()
-                            onFinished()
+                            MeetingService.stop(context)   // 服务是写入时长的主路径，先停
+                            vm.endMeeting { onFinished() } // 兜底写完再离开（导航会销毁本 VM）
                         },
                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error,

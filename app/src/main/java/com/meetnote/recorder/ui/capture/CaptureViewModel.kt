@@ -72,16 +72,24 @@ class CaptureViewModel(
     /**
      * 结束会议：录音服务是写入时长的主路径，这里只在服务没写成（权限被拒、
      * 服务未启动等）时兜底，保证 endedAt 一定有值。
+     * [onDone] 在兜底写入（或跳过/失败）完成后回调——拍摄页此时才可以安全离开，
+     * 否则导航销毁本 ViewModel 会取消 [viewModelScope]，兜底写入被丢弃。
      */
-    fun endMeeting() {
+    fun endMeeting(onDone: () -> Unit = {}) {
         viewModelScope.launch {
-            val m = repo.meeting(meetingId) ?: return@launch
-            if (m.endedAt == null) {
-                repo.finishMeeting(
-                    id = meetingId,
-                    audioPath = m.audioPath,
-                    durationMs = RecordingState.status.value.elapsedMs,
-                )
+            try {
+                val m = repo.meeting(meetingId) ?: return@launch
+                if (m.endedAt == null) {
+                    repo.finishMeeting(
+                        id = meetingId,
+                        audioPath = m.audioPath,
+                        durationMs = RecordingState.status.value.elapsedMs,
+                    )
+                }
+            } catch (t: Throwable) {
+                // 兜底写入失败不阻断离开（服务是主写入路径）——按全局不得引入崩溃约束
+            } finally {
+                onDone()
             }
         }
     }

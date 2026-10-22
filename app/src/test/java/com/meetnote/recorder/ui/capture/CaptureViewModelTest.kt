@@ -145,4 +145,19 @@ class CaptureViewModelTest {
 
         assertTrue(repo.finishedCalls.isEmpty())
     }
+
+    @Test
+    fun `endMeeting invokes onDone after the fallback write lands`() = runBlocking {
+        val repo = PagesFakeRepo()
+        val vm = CaptureViewModel(1L, repo)
+        RecordingState.bind(1L, 0)
+        RecordingState.onStart()
+        RecordingState.onTick(30_000)
+
+        var finishedCallsAtDone = -1
+        vm.endMeeting { finishedCallsAtDone = repo.finishedCalls.size }
+
+        assertEquals(1, finishedCallsAtDone)   // 回调时写入必须已经落库
+        assertNotNull(repo.meeting(1L)!!.endedAt)
+    }
 }
