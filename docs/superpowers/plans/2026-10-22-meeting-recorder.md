@@ -2592,7 +2592,9 @@ class SlideDeduplicatorTest {
         val sig = signals(slideWithTwoBullets())
         val cells = DedupeConfig.INK_W * DedupeConfig.INK_H
         assertEquals(cells, sig.inkMask.size)
-        assertEquals(cells, sig.inkCount)
+        // inkCount 是"有墨迹的格子数"而非全部格子：三条横带约占 503/3072 格。
+        // 原断言 assertEquals(cells, sig.inkCount) 按 brief Step 4 的预案改为区间断言
+        assertTrue("inkCount=${sig.inkCount}", sig.inkCount in 400..600)
         assertEquals(DedupeConfig.FINE_W * DedupeConfig.FINE_H, sig.fineGray.size)
         sig.fineGray.forEach { g -> assertTrue(g in 0f..1f) }
 
@@ -2636,6 +2638,23 @@ object DedupeConfig {
     const val SAME_RECALL = 0.90f
     const val SAME_FG = 0.85f
     const val SAME_COVERAGE = 0.90f
+
+    /**
+     * fgOldSim 的逐格缩放系数（**非死区容差**）：每格相似度 =
+     * `1 - min(1, |Δ灰度| / FG_TOLERANCE)`。小于该值的漂移同样被线性放大惩罚
+     * （Δ=0.05 → 该格 0.50），并非"不超即视为不变"。存在意义：深色文字被深色
+     * 图示整块盖住时每格均值差仅 ~0.17，纯绝对差度量实测 0.8514 > 0.85 会误判同页。
+     *
+     * 漂移预算：在 SAME_FG=0.85 下，均匀曝光/对齐漂移预算 ≈ FG_TOLERANCE × 0.15
+     * = 0.015（约 4/255 灰阶），比纯绝对差度量（预算 0.15）紧约 10 倍。
+     * 方向安全：逐格 min(1, ·) 截断使 fgOldSim 只会低于纯绝对差版本，只会把
+     * 同页翻成新页（宁可多留一页），不会把新页翻成同页。
+     *
+     * 真机复核（spec §15 风险 #4，首次真机调参）：必须用累积内容场景在曝光/对齐
+     * 漂移下验证仍判同页；若被误判为新页，调高 FG_TOLERANCE 放宽（调低只会收紧、
+     * 更易误判新页），配合 `adb logcat -s Dedupe` 观察 recall/fg/cov 定位掉线项。
+     */
+    const val FG_TOLERANCE = 0.10f
 
     /** 汇报用的综合分，仅用于日志与调参显示，不参与判定 */
     const val RECALL_WEIGHT = 0.5f
@@ -2790,20 +2809,22 @@ object SlideDeduplicator {
         val coverage = newInk.toFloat() / old.inkCount
 
         // 只在"旧页有内容"的细格上比对：文字被替换或擦除会显著拉低该值，
-        // 而"旧文字原地不动、旁边新增内容"时该值仍接近 1
+        // 而"旧文字原地不动、旁边新增内容"时该值仍接近 1。
+        // 每格相似度 = 1 - min(1, |Δ| / FG_TOLERANCE)（缩放截断，非死区容差，
+        // 详见 DedupeConfig.FG_TOLERANCE 注释）：纯均值绝对差在"深色文字被深色
+        // 图示盖住"时每格仅 ~0.17，整页实测 0.8514 会被误判同页。
         val oldFine = old.fineGray
         val candFine = candidate.fineGray
-        var diffSum = 0f
+        var simSum = 0f
         var oldInkCells = 0
         for (i in oldFine.indices) {
             if (oldFine[i] < DedupeConfig.INK_THRESHOLD) {
-                diffSum += kotlin.math.abs(oldFine[i] - candFine[i])
+                val diff = kotlin.math.abs(oldFine[i] - candFine[i])
+                simSum += 1f - (diff / DedupeConfig.FG_TOLERANCE).coerceAtMost(1f)
                 oldInkCells++
             }
         }
-        val fgOldSim =
-            if (oldInkCells == 0) 1f
-            else (1f - diffSum / oldInkCells).coerceIn(0f, 1f)
+        val fgOldSim = if (oldInkCells == 0) 1f else simSum / oldInkCells
 
         val score = DedupeConfig.RECALL_WEIGHT * recall +
             (1f - DedupeConfig.RECALL_WEIGHT) * fgOldSim

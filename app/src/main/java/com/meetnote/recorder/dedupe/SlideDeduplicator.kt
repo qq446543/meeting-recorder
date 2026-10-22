@@ -39,8 +39,9 @@ object SlideDeduplicator {
 
         // 只在"旧页有内容"的细格上比对：文字被替换或擦除会显著拉低该值，
         // 而"旧文字原地不动、旁边新增内容"时该值仍接近 1。
-        // 每格相似度按 FG_TOLERANCE 截断：普通均值灰度差在"深色文字被深色
-        // 图示盖住"时每格仅 ~0.17，不足以把整页拉到阈值以下，会误判同页。
+        // 每格相似度 = 1 - min(1, |Δ| / FG_TOLERANCE)（缩放截断，非死区容差，
+        // 详见 DedupeConfig.FG_TOLERANCE 注释）：纯均值绝对差在"深色文字被深色
+        // 图示盖住"时每格仅 ~0.17，整页实测 0.8514 会被误判同页。
         val oldFine = old.fineGray
         val candFine = candidate.fineGray
         var simSum = 0f
