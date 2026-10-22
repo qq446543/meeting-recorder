@@ -28,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,15 +53,15 @@ fun MeetingListScreen(
     onCreateMeeting: (String) -> Unit,
     onOpenGuide: () -> Unit,
 ) {
-    val list = meetings.value
+    val list by meetings.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
 
     // 新建会议成功后跳到拍摄页，随即清掉一次性事件，避免配置变更后重复跳转
-    val target = navigateTo.value
+    val target by navigateTo.collectAsState()
     LaunchedEffect(target) {
-        if (target != null) {
-            onOpenCapture(target)
+        target?.let { id ->
+            onOpenCapture(id)
             onConsumeNavigation()
         }
     }
