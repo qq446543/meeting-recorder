@@ -4706,6 +4706,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.view.WindowManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -4782,24 +4784,31 @@ fun CaptureScreen(
     val missing = needed.filter {
         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
     }
+    val cameraGranted = Manifest.permission.CAMERA !in missing
+    // 授权结果回调 bump tick：无论 granted 还是 denied，都会重新推导 missing
+    // （checkSelfPermission 不是快照状态，对话框返回后必须有状态变化驱动重算）
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissionTick++ }
+
     LaunchedEffect(missing.size, permissionTick) {
         if (missing.isNotEmpty()) {
-            android.app.Activity::class.java.let {
-                (context as? android.app.Activity)?.requestPermissions(missing.toTypedArray(), 100)
-            }
+            permissionLauncher.launch(missing.toTypedArray())
         } else if (!state.recording.running) {
             // 权限齐了就开录音（前台服务，锁屏不断）
             MeetingService.start(context, meetingId)
         }
     }
 
-    // 相机绑定
+    // 相机绑定：以授权状态为 key，授权后（含首次进入已授权）立即 bind，无需重进页面
     val previewView = remember {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
     val binder = remember { CameraBinder(lifecycleOwner, context) }
-    DisposableEffect(Unit) {
-        binder.bind(previewView)
+    DisposableEffect(cameraGranted) {
+        if (cameraGranted) {
+            binder.bind(previewView.surfaceProvider)
+        }
         onDispose { binder.unbind() }
     }
 

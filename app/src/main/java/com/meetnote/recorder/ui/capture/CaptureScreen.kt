@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -56,8 +58,6 @@ import com.meetnote.recorder.capture.CameraBinder
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.ui.list.formatDuration
 
-private const val REQUEST_CODE_PERMISSIONS = 100
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CaptureScreen(
@@ -92,26 +92,34 @@ fun CaptureScreen(
     val missing = needed.filter {
         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
     }
+    val cameraGranted = Manifest.permission.CAMERA !in missing
     // spec §12：录音权限未授予 → 不启动 MeetingService（阻止继续），并在界面上说明
     val audioDenied = Manifest.permission.RECORD_AUDIO in missing
+
+    // 授权结果回调 bump tick：无论 granted 还是 denied，都会重新推导 missing
+    // （checkSelfPermission 不是快照状态，对话框返回后必须有状态变化驱动重算）
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissionTick++ }
+
     LaunchedEffect(missing.size, permissionTick) {
         if (missing.isNotEmpty()) {
-            (context as? android.app.Activity)?.requestPermissions(
-                missing.toTypedArray(), REQUEST_CODE_PERMISSIONS,
-            )
+            permissionLauncher.launch(missing.toTypedArray())
         } else if (!state.recording.running) {
             // 权限齐了就开录音（前台服务，锁屏不断）
             MeetingService.start(context, meetingId)
         }
     }
 
-    // 相机绑定
+    // 相机绑定：以授权状态为 key，授权后（含首次进入已授权）立即 bind，无需重进页面
     val previewView = remember {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
     val binder = remember { CameraBinder(lifecycleOwner, context) }
-    DisposableEffect(Unit) {
-        binder.bind(previewView.surfaceProvider)
+    DisposableEffect(cameraGranted) {
+        if (cameraGranted) {
+            binder.bind(previewView.surfaceProvider)
+        }
         onDispose { binder.unbind() }
     }
 
