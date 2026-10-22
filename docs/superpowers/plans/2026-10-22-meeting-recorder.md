@@ -3473,7 +3473,7 @@ class QuadMathTest {
     @Test
     fun `plausible rejects absurdly wide strip`() {
         // 宽高比 8 → 不可能是幻灯片
-        val q = rect(10f, 160f, 630f, 200f)
+        val q = rect(10f, 100f, 630f, 260f)
         assertFalse(QuadMath.isPlausible(q, 640, 360))
     }
 
