@@ -50,4 +50,14 @@ object QualityGate {
         laplacianVar >= MIN_LAPLACIAN &&
             meanLuma in MIN_MEAN..MAX_MEAN &&
             aspect in MIN_ASPECT..MAX_ASPECT
+
+    /** ARGB 像素 → 0..255 灰度（Rec.601），供清晰度/亮度计算使用 */
+    fun grayOf(pixels: IntArray): FloatArray =
+        FloatArray(pixels.size) { i ->
+            val p = pixels[i]
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            0.299f * r + 0.587f * g + 0.114f * b
+        }
 }

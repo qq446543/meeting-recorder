@@ -52,9 +52,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.meetnote.recorder.audio.MeetingService
 import com.meetnote.recorder.capture.CameraBinder
+import com.meetnote.recorder.capture.CapturePipeline
+import com.meetnote.recorder.capture.DocumentCorrector
+import com.meetnote.recorder.capture.YuvFrames
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.ui.list.formatDuration
 
@@ -128,6 +132,40 @@ fun CaptureScreen(
         }
         onDispose { binder.unbind() }
     }
+
+    // 抓拍流水线
+    val pipeline = remember {
+        CapturePipeline(
+            meetingId = meetingId,
+            repository = repository,
+            scope = lifecycleOwner.lifecycleScope,
+            correct = DocumentCorrector()::correct,
+            onStatus = { st -> vm.onPipelineStatus(st.text, st.quad, st.degraded) },
+        )
+    }
+    pipeline.onPictureRequest = {
+        binder.takePicture(
+            androidx.core.content.ContextCompat.getMainExecutor(context),
+        ) { bmp ->
+            pipeline.onPicture(bmp)
+        }
+    }
+    LaunchedEffect(Unit) {
+        binder.setAnalyzer { proxy ->
+            val plane = proxy.planes[0]
+            val grid = YuvFrames.toGrid(
+                y = plane.buffer,
+                imageWidth = proxy.width,
+                imageHeight = proxy.height,
+                rowStride = plane.rowStride,
+                pixelStride = plane.pixelStride,
+            )
+            pipeline.analyze(grid, android.os.SystemClock.elapsedRealtime())
+            proxy.close()
+        }
+    }
+    LaunchedEffect(state.paused) { pipeline.setPaused(state.paused) }
+    DisposableEffect(Unit) { onDispose { pipeline.setPaused(true) } }
 
     // 斜拍梯形 → 屏幕矩形 的绿框（Task 10 会把 quad 灌进来）
     val quad = state.quad

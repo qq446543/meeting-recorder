@@ -49,4 +49,13 @@ class QualityGateTest {
     fun `accept passes a typical projector frame`() {
         assertTrue(QualityGate.accept(240.0, 140.0, 1.78f))
     }
+
+    @Test
+    fun `grayOf uses Rec 601 weights on 0-255 scale`() {
+        val px = intArrayOf(0xFFFF0000.toInt(), 0xFF00FF00.toInt(), 0xFF0000FF.toInt())
+        val g = QualityGate.grayOf(px)
+        assertEquals(76.2f, g[0], 0.5f)    // 0.299*255
+        assertEquals(149.7f, g[1], 0.5f)   // 0.587*255
+        assertEquals(29.1f, g[2], 0.5f)    // 0.114*255
+    }
 }
