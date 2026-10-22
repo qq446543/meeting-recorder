@@ -205,4 +205,18 @@ class CapturePipelineTest {
         feedStable(p, startTs = 110_000L, value = 200)
         assertTrue(pictureRequests >= 2)
     }
+
+    @Test
+    fun `corrector crash emits failure status and does not wedge`() {
+        val p = pipeline(correct = { _ -> throw IllegalStateException("boom") })
+        feedStable(p)
+        assertEquals(1, pictureRequests)
+
+        p.onPicture(striped())              // corrector 抛异常 → 回传失败状态而非崩溃
+        assertEquals("处理失败，继续监测…", statuses.last().text)
+
+        // 异常后 inFlight 已复位：换内容仍能再次触发
+        feedStable(p, startTs = 110_000L, value = 200)
+        assertTrue(pictureRequests >= 2)
+    }
 }

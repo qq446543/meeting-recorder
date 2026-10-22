@@ -5307,6 +5307,8 @@ class CapturePipeline(
         scope.launch(ioContext) {
             try {
                 process(bitmap)
+            } catch (t: Throwable) {
+                onStatus(PipelineStatus("处理失败，继续监测…"))
             } finally {
                 inFlight = false
             }
