@@ -13,8 +13,9 @@ data class ShotResult(
 /**
  * 仓库：编排 Room 与文件系统。
  *
- * 相似度由调用方算好后通过 [similarityToLast] 传入，阈值判定在实现类的
- * `decide` 中完成，这样仓库逻辑可以脱离 Bitmap/图像算法单独测试。
+ * 是否同页由调用方交给 [com.meetnote.recorder.dedupe.SlideDeduplicator]
+ * 判定后通过 [isSamePage] 传入，阈值判定完全归算法所有，仓库只按布尔值分支，
+ * 这样仓库逻辑可以脱离 Bitmap/图像算法单独测试。
  * 默认实现在 [DefaultMeetingRepository]。
  */
 interface MeetingRepository {
@@ -39,18 +40,18 @@ interface MeetingRepository {
      * 记录一次抓拍结果。调用方负责：把 [imageFile] 写到对应的
      * 覆盖路径或新页路径上（见 [targetFileFor]），本方法只负责入库与返回结果。
      *
-     * @param similarityToLast 与上一页的相似度；无上一页时传 0f
+     * @param isSamePage 是否与上一页为同一页（由 SlideDeduplicator 判定）；无上一页时传 false
      */
     suspend fun registerShot(
         meetingId: Long,
         imageFile: File,
         width: Int,
         height: Int,
-        similarityToLast: Float,
+        isSamePage: Boolean,
     ): ShotResult
 
     /** 本次抓拍该写到哪个文件：覆盖上一页 → 上一页路径；新页 → 下一页路径 */
-    suspend fun targetFileFor(meetingId: Long, similarityToLast: Float): File
+    suspend fun targetFileFor(meetingId: Long, isSamePage: Boolean): File
 
     fun meetingAudioFile(meetingId: Long): File
 

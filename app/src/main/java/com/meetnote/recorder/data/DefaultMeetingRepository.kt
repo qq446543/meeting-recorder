@@ -41,19 +41,19 @@ class DefaultMeetingRepository(
      * 记录一次抓拍结果。调用方负责：把 [imageFile] 写到 [fileStore.pageFile] 对应的
      * 覆盖路径或新页路径上（见 [targetFileFor]），本方法只负责入库与返回结果。
      *
-     * @param similarityToLast 与上一页的相似度；无上一页时传 0f
+     * @param isSamePage 是否与上一页为同一页（由 SlideDeduplicator 判定）；无上一页时传 false
      */
     override suspend fun registerShot(
         meetingId: Long,
         imageFile: File,
         width: Int,
         height: Int,
-        similarityToLast: Float,
+        isSamePage: Boolean,
     ): ShotResult {
         val last = dao.lastPage(meetingId)
         val now = System.currentTimeMillis()
 
-        return if (last != null && decide(similarityToLast) == PageChoice.OVERWRITE) {
+        return if (last != null && isSamePage) {
             // 同页新增内容：页码不变，只换图并累加拍摄次数
             dao.updatePage(
                 last.copy(
@@ -84,9 +84,9 @@ class DefaultMeetingRepository(
     }
 
     /** 本次抓拍该写到哪个文件：覆盖上一页 → 上一页路径；新页 → 下一页路径 */
-    override suspend fun targetFileFor(meetingId: Long, similarityToLast: Float): File {
+    override suspend fun targetFileFor(meetingId: Long, isSamePage: Boolean): File {
         val last = dao.lastPage(meetingId)
-        return if (last != null && decide(similarityToLast) == PageChoice.OVERWRITE) {
+        return if (last != null && isSamePage) {
             File(last.filePath)
         } else {
             fileStore.pageFile(meetingId, (last?.index ?: 0) + 1)
@@ -96,14 +96,4 @@ class DefaultMeetingRepository(
     override fun meetingAudioFile(meetingId: Long): File = fileStore.audioFile(meetingId)
 
     override fun freeBytes(): Long = fileStore.freeBytes()
-
-    companion object {
-        /** 判定函数集中在此，阈值由 DedupeConfig 提供（Task 5 接入真实阈值） */
-        fun decide(similarity: Float): PageChoice =
-            if (similarity >= THRESHOLD_OVERWRITE) PageChoice.OVERWRITE else PageChoice.APPEND
-
-        private const val THRESHOLD_OVERWRITE = 0.85f
-    }
 }
-
-enum class PageChoice { OVERWRITE, APPEND }

@@ -62,10 +62,10 @@ private class FakeRepo : MeetingRepository {
         imageFile: File,
         width: Int,
         height: Int,
-        similarityToLast: Float,
+        isSamePage: Boolean,
     ): ShotResult = throw UnsupportedOperationException()
 
-    override suspend fun targetFileFor(meetingId: Long, similarityToLast: Float): File =
+    override suspend fun targetFileFor(meetingId: Long, isSamePage: Boolean): File =
         throw UnsupportedOperationException()
 
     override fun meetingAudioFile(meetingId: Long): File = throw UnsupportedOperationException()
