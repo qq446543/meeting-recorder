@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -51,8 +52,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.data.SlidePage
+import com.meetnote.recorder.export.PdfExporter
 import com.meetnote.recorder.ui.list.formatDuration
 import java.io.File
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -73,6 +76,40 @@ fun MeetingDetailScreen(
     var pendingPageDelete by remember { mutableStateOf<SlidePage?>(null) }
     var confirmMeetingDelete by remember { mutableStateOf(false) }
 
+    var exporting by remember { mutableStateOf(false) }
+    var exportError by remember { mutableStateOf<String?>(null) }
+    var shareUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    val createPdf = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val pages = vm.ui.value.pages
+        if (pages.isEmpty()) {
+            exportError = "没有可导出的页面"
+            return@rememberLauncherForActivityResult
+        }
+        exporting = true
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val out = context.contentResolver.openOutputStream(uri, "wt")
+                    ?: throw IllegalStateException("无法打开目标文件")
+                out.use { stream ->
+                    PdfExporter().export(files = pages.map { File(it.filePath) }, out = stream)
+                }
+                shareUri = uri
+                exportError = null
+            } catch (t: Throwable) {
+                exportError = "导出失败：${t.message}"
+            } finally {
+                exporting = false
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -83,6 +120,12 @@ fun MeetingDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { createPdf.launch("会议纪要-${state.title}.pdf") },
+                        enabled = state.pages.isNotEmpty() && !exporting,
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "导出 PDF")
+                    }
                     IconButton(onClick = { confirmMeetingDelete = true }) {
                         Icon(Icons.Default.Delete, contentDescription = "删除会议")
                     }
@@ -130,6 +173,36 @@ fun MeetingDetailScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     )
                 }
+            }
+
+            exportError?.let {
+                Text(
+                    it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            shareUri?.let { uri ->
+                Row(Modifier.padding(horizontal = 12.dp)) {
+                    TextButton(onClick = {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "application/pdf"
+                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            android.content.Intent.createChooser(intent, "分享会议纪要")
+                        )
+                    }) {
+                        Text("分享 PDF")
+                    }
+                }
+            }
+            if (exporting) {
+                Text(
+                    "正在生成 PDF…", style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
             }
 
             if (state.pages.isEmpty()) {
