@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.meetnote.recorder.audio.RecordingState
 import com.meetnote.recorder.data.MeetingStats
 import com.meetnote.recorder.data.SpaceCheck
 import kotlinx.coroutines.flow.StateFlow
@@ -52,13 +53,17 @@ fun MeetingListScreen(
     onConsumeNavigation: () -> Unit,
     onOpenDetail: (Long) -> Unit,
     onOpenCapture: (Long) -> Unit,
+    onContinueCapture: (Long) -> Unit,
     onCreateMeeting: (String) -> Unit,
     onOpenGuide: () -> Unit,
 ) {
     val context = LocalContext.current
     val list by meetings.collectAsState()
+    // 全局录音状态（同 CaptureViewModel 的数据源）：录音中禁止并发新建会议（WHOLE-BRANCH I2）
+    val recording by RecordingState.status.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
+    var recordingBlocked by remember { mutableStateOf(false) }
     var spaceWarning by remember { mutableStateOf<String?>(null) }
 
     // 新建会议成功后跳到拍摄页，随即清掉一次性事件，避免配置变更后重复跳转
@@ -82,7 +87,15 @@ fun MeetingListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { title = ""; showDialog = true }) {
+            FloatingActionButton(onClick = {
+                if (recording.running) {
+                    // 录音进行中不弹标题对话框，防止幽灵时长的第二场会议（WHOLE-BRANCH I2）
+                    recordingBlocked = true
+                } else {
+                    title = ""
+                    showDialog = true
+                }
+            }) {
                 Icon(Icons.Default.Add, contentDescription = "新建会议")
             }
         },
@@ -106,7 +119,14 @@ fun MeetingListScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(list, key = { it.id }) { stats ->
-                    MeetingCard(stats = stats, onClick = { onOpenDetail(stats.id) })
+                    MeetingCard(
+                        stats = stats,
+                        onClick = {
+                            // 进行中会议可回到拍摄页续拍（spec §12 重入）；已结束进详情
+                            if (stats.endedAt == null) onContinueCapture(stats.id)
+                            else onOpenDetail(stats.id)
+                        },
+                    )
                 }
             }
         }
@@ -145,6 +165,17 @@ fun MeetingListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (recordingBlocked) {
+        AlertDialog(
+            onDismissRequest = { recordingBlocked = false },
+            title = { Text("已有会议正在录音") },
+            text = { Text("请先结束当前会议后再新建。") },
+            confirmButton = {
+                TextButton(onClick = { recordingBlocked = false }) { Text("知道了") }
             },
         )
     }

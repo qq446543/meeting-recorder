@@ -62,6 +62,21 @@ import com.meetnote.recorder.capture.YuvFrames
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.ui.list.formatDuration
 
+/**
+ * 自动开录的阻断权限集合（两级权限门，WHOLE-BRANCH C1）：仅相机与麦克风缺失阻断
+ * [MeetingService.start]；POST_NOTIFICATIONS 仍在同一权限流程里请求（通知能显示），
+ * 但其缺失绝不阻断录音——spec §10 属 nice-to-have，spec §12 禁止静默阻断。
+ * [notificationsGranted] 是决策输入但非阻断项，故不进入集合。
+ */
+internal fun blockingMissingPermissions(
+    cameraGranted: Boolean,
+    audioGranted: Boolean,
+    notificationsGranted: Boolean,
+): List<String> = buildList {
+    if (!cameraGranted) add(Manifest.permission.CAMERA)
+    if (!audioGranted) add(Manifest.permission.RECORD_AUDIO)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CaptureScreen(
@@ -99,6 +114,12 @@ fun CaptureScreen(
     val cameraGranted = Manifest.permission.CAMERA !in missing
     // spec §12：录音权限未授予 → 不启动 MeetingService（阻止继续），并在界面上说明
     val audioDenied = Manifest.permission.RECORD_AUDIO in missing
+    // 两级权限门（C1）：只有相机+麦克风缺失阻断开录；通知权限只请求、不阻断
+    val blockingMissing = blockingMissingPermissions(
+        cameraGranted = cameraGranted,
+        audioGranted = !audioDenied,
+        notificationsGranted = Manifest.permission.POST_NOTIFICATIONS !in missing,
+    )
 
     // 仅在待授权集合"变化"时自动请求：拒绝后集合不变 → 不再重复弹窗（手动重试会先清空它）
     var lastRequested by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -115,8 +136,10 @@ fun CaptureScreen(
                 lastRequested = missing
                 permissionLauncher.launch(missing.toTypedArray())
             }
-        } else if (!state.recording.running) {
-            // 权限齐了就开录音（前台服务，锁屏不断）
+        }
+        // 两级门：相机+麦克风已授权就开录（通知权限缺失不阻断；前台服务，锁屏不断）。
+        // 请求分支的 lastRequested 守卫原样保留 → 拒绝后不会重复弹窗（Task 9 循环不回归）
+        if (blockingMissing.isEmpty() && !state.recording.running) {
             MeetingService.start(context, meetingId)
         }
     }

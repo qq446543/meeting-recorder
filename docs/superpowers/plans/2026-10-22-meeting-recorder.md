@@ -1518,6 +1518,7 @@ fun AppNav() {
                 onConsumeNavigation = vm::consumeNavigation,
                 onOpenDetail = { navController.navigate(Routes.detail(it)) },
                 onOpenCapture = { navController.navigate(Routes.capture(it)) },
+                onContinueCapture = { navController.navigate(Routes.capture(it)) },
                 onCreateMeeting = vm::createMeeting,
                 onOpenGuide = { navController.navigate(Routes.GUIDE) },
             )
@@ -1622,6 +1623,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.meetnote.recorder.audio.RecordingState
 import com.meetnote.recorder.data.MeetingStats
 import kotlinx.coroutines.flow.StateFlow
 import java.text.SimpleDateFormat
@@ -1636,12 +1638,16 @@ fun MeetingListScreen(
     onConsumeNavigation: () -> Unit,
     onOpenDetail: (Long) -> Unit,
     onOpenCapture: (Long) -> Unit,
+    onContinueCapture: (Long) -> Unit,
     onCreateMeeting: (String) -> Unit,
     onOpenGuide: () -> Unit,
 ) {
     val list by meetings.collectAsState()
+    // 全局录音状态（同 CaptureViewModel 的数据源）：录音中禁止并发新建会议（WHOLE-BRANCH I2）
+    val recording by RecordingState.status.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
+    var recordingBlocked by remember { mutableStateOf(false) }
 
     // 新建会议成功后跳到拍摄页，随即清掉一次性事件，避免配置变更后重复跳转
     val target by navigateTo.collectAsState()
@@ -1664,7 +1670,15 @@ fun MeetingListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { title = ""; showDialog = true }) {
+            FloatingActionButton(onClick = {
+                if (recording.running) {
+                    // 录音进行中不弹标题对话框，防止幽灵时长的第二场会议（WHOLE-BRANCH I2）
+                    recordingBlocked = true
+                } else {
+                    title = ""
+                    showDialog = true
+                }
+            }) {
                 Icon(Icons.Default.Add, contentDescription = "新建会议")
             }
         },
@@ -1688,7 +1702,14 @@ fun MeetingListScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(list, key = { it.id }) { stats ->
-                    MeetingCard(stats = stats, onClick = { onOpenDetail(stats.id) })
+                    MeetingCard(
+                        stats = stats,
+                        onClick = {
+                            // 进行中会议可回到拍摄页续拍（spec §12 重入）；已结束进详情
+                            if (stats.endedAt == null) onContinueCapture(stats.id)
+                            else onOpenDetail(stats.id)
+                        },
+                    )
                 }
             }
         }
@@ -1718,6 +1739,17 @@ fun MeetingListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (recordingBlocked) {
+        AlertDialog(
+            onDismissRequest = { recordingBlocked = false },
+            title = { Text("已有会议正在录音") },
+            text = { Text("请先结束当前会议后再新建。") },
+            confirmButton = {
+                TextButton(onClick = { recordingBlocked = false }) { Text("知道了") }
             },
         )
     }
@@ -4752,6 +4784,21 @@ import com.meetnote.recorder.audio.MeetingService
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.ui.list.formatDuration
 
+/**
+ * 自动开录的阻断权限集合（两级权限门，WHOLE-BRANCH C1）：仅相机与麦克风缺失阻断
+ * [MeetingService.start]；POST_NOTIFICATIONS 仍在同一权限流程里请求（通知能显示），
+ * 但其缺失绝不阻断录音——spec §10 属 nice-to-have，spec §12 禁止静默阻断。
+ * [notificationsGranted] 是决策输入但非阻断项，故不进入集合。
+ */
+internal fun blockingMissingPermissions(
+    cameraGranted: Boolean,
+    audioGranted: Boolean,
+    notificationsGranted: Boolean,
+): List<String> = buildList {
+    if (!cameraGranted) add(Manifest.permission.CAMERA)
+    if (!audioGranted) add(Manifest.permission.RECORD_AUDIO)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CaptureScreen(
@@ -4785,6 +4832,12 @@ fun CaptureScreen(
         ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
     }.toSet()
     val cameraGranted = Manifest.permission.CAMERA !in missing
+    // 两级权限门（C1）：只有相机+麦克风缺失阻断开录；通知权限只请求、不阻断
+    val blockingMissing = blockingMissingPermissions(
+        cameraGranted = cameraGranted,
+        audioGranted = Manifest.permission.RECORD_AUDIO !in missing,
+        notificationsGranted = Manifest.permission.POST_NOTIFICATIONS !in missing,
+    )
     // 仅在待授权集合"变化"时自动请求：拒绝后集合不变 → 不再重复弹窗（手动重试会先清空它）
     var lastRequested by remember { mutableStateOf<Set<String>>(emptySet()) }
     // 授权结果回调 bump tick：无论 granted 还是 denied，都会重新推导 missing
@@ -4799,8 +4852,10 @@ fun CaptureScreen(
                 lastRequested = missing
                 permissionLauncher.launch(missing.toTypedArray())
             }
-        } else if (!state.recording.running) {
-            // 权限齐了就开录音（前台服务，锁屏不断）
+        }
+        // 两级门：相机+麦克风已授权就开录（通知权限缺失不阻断；前台服务，锁屏不断）。
+        // 请求分支的 lastRequested 守卫原样保留 → 拒绝后不会重复弹窗（Task 9 循环不回归）
+        if (blockingMissing.isEmpty() && !state.recording.running) {
             MeetingService.start(context, meetingId)
         }
     }
@@ -7112,6 +7167,7 @@ Expected: `app\build\outputs\apk\release\app-release.apk` 存在且体积 > 30MB
 - [ ] 切到微信 1 分钟，录音不中断
 - [ ] 点「停止录音」后详情页显示的时长 ≈ 实际时长（误差 < 3s）
 - [ ] 详情页播放录音，能听到会议声音
+- [ ] 引导页「一键申请忽略电池优化」弹出系统对话框，或落入设置页且有手动路径提示
 
 ## 自动抓拍（核心）
 - [ ] 面向投影幕布打开拍摄页，绿色框能框住屏幕
@@ -7132,6 +7188,7 @@ Expected: `app\build\outputs\apk\release\app-release.apk` 存在且体积 > 30MB
 - [ ] 导出 PDF 成功，页序与放映顺序一致
 - [ ] 导出后点「分享」，微信/文件管理器出现在分享面板中
 - [ ] 用其他 PDF 阅读器打开导出的文件，图片清晰、无裁切
+- [ ] 导出进行中旋转屏幕：分享按钮仍在、导出结果可分享
 
 ## 容错
 - [ ] 关闭相机权限后进拍摄页，不崩溃，有引导

@@ -54,6 +54,7 @@ fun AppNav() {
                 onConsumeNavigation = vm::consumeNavigation,
                 onOpenDetail = { navController.navigate(Routes.detail(it)) },
                 onOpenCapture = { navController.navigate(Routes.capture(it)) },
+                onContinueCapture = { navController.navigate(Routes.capture(it)) },
                 onCreateMeeting = vm::createMeeting,
                 onOpenGuide = { navController.navigate(Routes.GUIDE) },
             )
