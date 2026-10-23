@@ -6085,6 +6085,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.data.SlidePage
@@ -6098,9 +6100,14 @@ fun MeetingDetailScreen(
     repository: MeetingRepository,
     onBack: () -> Unit,
 ) {
-    val vm: MeetingDetailViewModel = remember {
-        MeetingDetailViewModel(meetingId, repository, MediaPlayerAudioPlayer())
-    }
+    val vm: MeetingDetailViewModel = viewModel(
+        key = "detail-$meetingId",
+        factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                MeetingDetailViewModel(meetingId, repository, MediaPlayerAudioPlayer()) as T
+        },
+    )
     val state by vm.ui.collectAsState()
     var pendingPageDelete by remember { mutableStateOf<SlidePage?>(null) }
     var confirmMeetingDelete by remember { mutableStateOf(false) }
