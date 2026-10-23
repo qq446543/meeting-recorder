@@ -109,7 +109,28 @@ class CapturePipeline(
         // 3. 同页判定
         val signals = SignalBuilder.fromPixels(pixels, image.width, image.height)
         val previous = cachedLastSignals()
-        val isSamePage = previous != null && SlideDeduplicator.compare(previous, signals).isSamePage
+        val sim = previous?.let { SlideDeduplicator.compare(it, signals) }
+        val isSamePage = sim?.isSamePage == true
+
+        // 调参日志（spec §15）：每张抓拍输出关键指标，供 adb logcat -s Dedupe 阈值调参
+        android.util.Log.d(
+            "Dedupe",
+            buildString {
+                append("index=")
+                append(repository.pageCount(meetingId))
+                if (sim != null) {
+                    append(" recall="); append("%.3f".format(sim.recall))
+                    append(" fg="); append("%.3f".format(sim.fgOldSim))
+                    append(" cov="); append("%.3f".format(sim.coverage))
+                    append(" score="); append("%.3f".format(sim.score))
+                    append(" same="); append(sim.isSamePage)
+                } else {
+                    append(" firstPage=true")
+                }
+                append(" lap="); append("%.1f".format(lap))
+                append(" mean="); append("%.1f".format(QualityGate.meanLuma(gray)))
+            },
+        )
 
         // 4. 写文件 + 入库
         val target = repository.targetFileFor(meetingId, isSamePage)

@@ -18,3 +18,4 @@ keystore.properties
 # 其他
 *.log
 .DS_Store
+.kotlin/
