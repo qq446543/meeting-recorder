@@ -35,8 +35,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.meetnote.recorder.data.MeetingStats
+import com.meetnote.recorder.data.SpaceCheck
 import kotlinx.coroutines.flow.StateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -53,9 +55,11 @@ fun MeetingListScreen(
     onCreateMeeting: (String) -> Unit,
     onOpenGuide: () -> Unit,
 ) {
+    val context = LocalContext.current
     val list by meetings.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
+    var spaceWarning by remember { mutableStateOf<String?>(null) }
 
     // 新建会议成功后跳到拍摄页，随即清掉一次性事件，避免配置变更后重复跳转
     val target by navigateTo.collectAsState()
@@ -126,12 +130,38 @@ fun MeetingListScreen(
                     onClick = {
                         val t = title.trim().ifBlank { "未命名会议" }
                         showDialog = false
-                        onCreateMeeting(t)
+                        val warning = SpaceCheck.warning(
+                            // 用应用可用空间近似：FileStore 的 freeBytes 在 Repository 上，
+                            // 列表页没有仓库引用时可用 context.filesDir.usableSpace
+                            context.filesDir.usableSpace,
+                        )
+                        if (warning == null) {
+                            onCreateMeeting(t)
+                        } else {
+                            spaceWarning = warning
+                        }
                     },
                 ) { Text("开始") }
             },
             dismissButton = {
                 TextButton(onClick = { showDialog = false }) { Text("取消") }
+            },
+        )
+    }
+
+    spaceWarning?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { spaceWarning = null },
+            title = { Text("空间可能不够") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = {
+                    spaceWarning = null
+                    onCreateMeeting(title.trim().ifBlank { "未命名会议" })
+                }) { Text("仍然开始") }
+            },
+            dismissButton = {
+                TextButton(onClick = { spaceWarning = null }) { Text("先去清理") }
             },
         )
     }

@@ -260,6 +260,11 @@ fun CaptureScreen(
                     }
                 }
                 Text(
+                    "拍摄期间请保持本应用在前台、屏幕常亮；录音不受影响",
+                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
                     buildString {
                         append(state.statusText)
                         append("　·　已拍 ")
