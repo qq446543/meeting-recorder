@@ -23,6 +23,9 @@ data class CaptureUiState(
     val quad: Quad? = null,
     val degraded: Boolean = false,
     val opencvAvailable: Boolean = false,
+    /** 拍摄原图尺寸（quad 在原图坐标系，绿框叠加层据此换算）；未拍到前用常见预览尺寸兜底 */
+    val imageW: Int = 1280,
+    val imageH: Int = 720,
 )
 
 class CaptureViewModel(
@@ -61,8 +64,28 @@ class CaptureViewModel(
         return next
     }
 
-    fun onPipelineStatus(text: String, quad: Quad?, degraded: Boolean) {
-        _ui.update { it.copy(statusText = text, quad = quad, degraded = degraded) }
+    /**
+     * 流水线状态 → UI。
+     * 真机验收第一轮：状态可携带拍摄原图尺寸（imageW/imageH），供绿框叠加层换算坐标。
+     * 关键规则：null 表示"保持当前值"——阶段类状态（正在观察画面…等）不带尺寸，
+     * 绝不能把已存的抓拍尺寸（如 1920×1080）打回 1280×720 默认值。
+     */
+    fun onPipelineStatus(
+        text: String,
+        quad: Quad?,
+        degraded: Boolean,
+        imageW: Int? = null,
+        imageH: Int? = null,
+    ) {
+        _ui.update {
+            it.copy(
+                statusText = text,
+                quad = quad,
+                degraded = degraded,
+                imageW = imageW ?: it.imageW,
+                imageH = imageH ?: it.imageH,
+            )
+        }
     }
 
     fun refreshPageCount(n: Int) {

@@ -28,7 +28,7 @@ class StabilityDetectorTest {
     }
 
     @Test
-    fun `fewer than five stable frames does not trigger`() {
+    fun `fewer than stable-frames-threshold does not trigger`() {
         val d = detector()
         // 注意：首帧固定返回 Initialising（见 `first frame only initialises`），
         // 因此这里断言"不触发拍摄"而非逐帧断言 Stabilising——原断言与首帧语义冲突。
@@ -57,7 +57,8 @@ class StabilityDetectorTest {
         val d = detector()
         var last: Verdict = Verdict.Initialising
         for (i in 0 until 40) {
-            last = d.onFrame(grid(100 + (i % 2) * 30), i * 33L)   // 帧间差 30 > 2.0
+            // 帧间差 30 恒大于稳定阈值（阈值无关的写法：30 远高于任何合理 STABLE_MAD）
+            last = d.onFrame(grid(100 + (i % 2) * 30), i * 33L)
         }
         assertEquals(Verdict.Stabilising, last)
     }
@@ -65,26 +66,27 @@ class StabilityDetectorTest {
     @Test
     fun `no repeat capture when nothing changed`() {
         val d = detector()
-        // 稳定并拍下第一张
-        val first = (0 until 6).map { i -> d.onFrame(grid(100), i * 33L) }
+        // 稳定并拍下第一张（基线需 STABLE_FRAMES + 1 帧才到 CaptureNow，首拍 ts = STABLE_FRAMES*33 = 330）
+        val first = (0 until AnalysisConfig.STABLE_FRAMES + 1).map { i -> d.onFrame(grid(100), i * 33L) }
         assertTrue(first.last() is Verdict.CaptureNow)
 
         // 画面持续不动：再多喂 30 帧，不得重复拍
-        val rest = (6 until 36).map { i -> d.onFrame(grid(100), i * 33L) }
+        val rest = (AnalysisConfig.STABLE_FRAMES + 1 until AnalysisConfig.STABLE_FRAMES + 31)
+            .map { i -> d.onFrame(grid(100), i * 33L) }
         assertTrue("画面没变不应重拍", rest.none { it is Verdict.CaptureNow })
     }
 
     @Test
     fun `content change triggers new capture`() {
         val d = detector()
-        // 基线：稳定 + 首拍
-        (0 until 6).forEach { i -> d.onFrame(grid(100), i * 33L) }
+        // 基线：稳定 + 首拍（ts = STABLE_FRAMES*33 = 330）
+        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(grid(100), i * 33L) }
         // 翻页：先抖几帧（动画），再稳定。
-        // 时间戳从 700ms 起：首拍发生在 165ms，冷却期到 565ms；
-        // 若沿用 i*33（≤561ms）整段动画都落在冷却期内，永远等不到拍摄
+        // 时间戳从 800ms 起：首拍发生在 330ms，冷却期到 730ms；
+        // 若沿用紧邻基线的时间戳，整段动画都落在冷却期内，永远等不到拍摄
         //（与 `cooldown suppresses immediate retrigger` 的 400ms 冷却语义冲突）。
-        val verdicts = (6 until 6 + 12).map { i ->
-            d.onFrame(grid(if (i < 9) 60 else 200), 700L + (i - 6) * 33L)
+        val verdicts = (11 until 11 + 14).map { i ->
+            d.onFrame(grid(if (i < 14) 60 else 200), 800L + (i - 11) * 33L)
         }
         assertTrue(
             "翻页后应拍到新页，实际 $verdicts",
@@ -95,14 +97,18 @@ class StabilityDetectorTest {
     @Test
     fun `cooldown suppresses immediate retrigger`() {
         val d = detector()
-        // 首拍发生在 ts = 5*33 = 165
-        (0 until 6).forEach { i -> d.onFrame(grid(100), i * 33L) }
+        // 基线 11 帧：首拍发生在 ts = STABLE_FRAMES*33 = 330，冷却期到 330 + 400 = 730
+        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(grid(100), i * 33L) }
 
-        // 冷却期内（165 + 400 = 565 之前）即使已经稳定并变化也不拍
-        val early = (6 until 6 + 6).map { i -> d.onFrame(grid(200), 200L + i * 30L) }
+        // 冷却期内喂"真的稳定且已变化"的整段（11 帧，ts 396..726 全部 < 730）：不得拍摄
+        val early = (12..22).map { i -> d.onFrame(grid(200), i * 33L) }
         assertTrue(
             "冷却期内不应拍摄", early.none { it is Verdict.CaptureNow },
         )
+
+        // 冷却期一过（ts ≥ 730）同样这段画面立即可拍——冷却只延迟、不吞掉触发
+        val late = (23..24).map { i -> d.onFrame(grid(200), i * 33L) }
+        assertTrue("冷却期结束后应恢复拍摄", late.any { it is Verdict.CaptureNow })
     }
 
     @Test

@@ -1,12 +1,25 @@
 package com.meetnote.recorder.capture
 
-/** 分析用参数集中于此（spec §6.2） */
+/**
+ * 分析用参数集中于此（spec §6.2）。
+ *
+ * 调参总原则（真机验收第一轮，OnePlus 13）：宁可多拍不可漏拍
+ * （漏拍不可恢复，多拍由同页去重兜底）。
+ */
 object AnalysisConfig {
     const val W = 64
     const val H = 36
-    const val STABLE_MAD = 2.0f
-    const val STABLE_FRAMES = 5
-    const val CHANGE_MAD = 4.0f
+
+    /** 稳定判定 MAD 阈值：真机传感器噪声约 ±1–4，旧值 2.0 永远判不稳定（漏拍根因）；6.0 放噪声通过，翻页动画的 30/140 仍远高于它 */
+    const val STABLE_MAD = 6.0f
+
+    /** 连续稳定帧数：10 帧 ≈ 333ms，覆盖 300–500ms 翻页动画收尾（旧值 5 帧 ≈ 165ms 会拍到动画中间态） */
+    const val STABLE_FRAMES = 10
+
+    /** 内容变化 MAD 阈值：PPT 逐条动画（bullet 级）约 3.6，旧值 4.0 会漏拍；2.5 能触发，多拍由 DedupeConfig 同页去重兜底（页数不涨） */
+    const val CHANGE_MAD = 2.5f
+
+    /** 抓拍冷却：400ms 内不重复触发，防连拍风暴（只延迟不吞掉触发） */
     const val COOLDOWN_MS = 400L
 }
 

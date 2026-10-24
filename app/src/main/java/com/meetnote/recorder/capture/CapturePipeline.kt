@@ -20,6 +20,9 @@ data class PipelineStatus(
     val quad: Quad? = null,
     val degraded: Boolean = false,
     val shot: ShotResult? = null,
+    /** 拍摄原图尺寸（quad 在原图坐标系；叠加层据此换算坐标）。阶段类状态不带尺寸 → null */
+    val imageW: Int? = null,
+    val imageH: Int? = null,
 )
 
 /**
@@ -55,13 +58,31 @@ class CapturePipeline(
         if (!paused) stability.reset()
     }
 
+    /** 最近一次发出的阶段文案：仅在阶段切换时上报（真机验收 H2：判定过程必须可见，但绝不逐帧刷屏） */
+    private var lastStage: String? = null
+
     fun analyze(grid: FrameGrid, tsMs: Long) {
         if (paused || inFlight) return
         val verdict = stability.onFrame(grid, tsMs)
         if (verdict is Verdict.CaptureNow) {
             inFlight = true
             onPictureRequest()
+            return
         }
+        emitStage(verdict)
+    }
+
+    /** 阶段判定 → 状态文案；连续同阶段不重复上报，CaptureNow 本身不发阶段行（拍摄状态另发） */
+    private fun emitStage(verdict: Verdict) {
+        val text = when (verdict) {
+            Verdict.Initialising -> "正在观察画面…"
+            Verdict.Stabilising -> "画面有变化，等待稳定…"
+            Verdict.NoChange -> "画面已稳定，等待翻页"
+            Verdict.CaptureNow -> return
+        }
+        if (text == lastStage) return
+        lastStage = text
+        onStatus(PipelineStatus(text))
     }
 
     /** 手动快门：跳过稳定判定直接拍 */
@@ -95,7 +116,7 @@ class CapturePipeline(
         val degraded = detectFailures >= DEGRADE_AFTER
         val image = correction.bitmap
 
-        // 2. 质量门：不过就静默丢弃（spec §12）
+        // 2. 质量门：不过就丢弃，但必须可见（spec §12 禁止静默阻断），并带上原图尺寸供绿框换算
         val pixels = IntArray(image.width * image.height)
         image.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
         val gray = QualityGate.grayOf(pixels)
@@ -103,7 +124,17 @@ class CapturePipeline(
             ?: image.width.toFloat() / image.height
         val lap = QualityGate.laplacianVariance(gray, image.width, image.height)
         if (!QualityGate.accept(lap, QualityGate.meanLuma(gray), aspect)) {
-            return   // 画面模糊/过亮/比例异常：丢弃候选，继续监测
+            // 画面模糊/过亮/比例异常：丢弃候选、继续监测，让拍摄者知道这帧没算数
+            onStatus(
+                PipelineStatus(
+                    text = "画面模糊或过亮，已跳过，继续监测…",
+                    quad = correction.quad,
+                    degraded = degraded,
+                    imageW = source.width,
+                    imageH = source.height,
+                ),
+            )
+            return
         }
 
         // 3. 同页判定
@@ -154,6 +185,8 @@ class CapturePipeline(
                 quad = correction.quad,
                 degraded = degraded,
                 shot = result,
+                imageW = source.width,
+                imageH = source.height,
             ),
         )
     }

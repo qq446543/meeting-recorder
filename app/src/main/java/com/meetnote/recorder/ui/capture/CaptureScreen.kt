@@ -40,9 +40,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -163,7 +162,7 @@ fun CaptureScreen(
             repository = repository,
             scope = lifecycleOwner.lifecycleScope,
             correct = DocumentCorrector()::correct,
-            onStatus = { st -> vm.onPipelineStatus(st.text, st.quad, st.degraded) },
+            onStatus = { st -> vm.onPipelineStatus(st.text, st.quad, st.degraded, st.imageW, st.imageH) },
         )
     }
     pipeline.onPictureRequest = {
@@ -232,23 +231,28 @@ fun CaptureScreen(
         Box(Modifier.fillMaxSize().padding(padding)) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-            // 检测框叠加层
+            // 检测框叠加层：quad 在拍摄原图坐标系，用状态携带的原图尺寸换算（真机验收 H4：不再硬编码 1280×720）
             if (quad != null) {
                 Canvas(Modifier.fillMaxSize()) {
                     val pts = listOf(quad.tl, quad.tr, quad.br, quad.bl).map {
                         PreviewOverlay.mapImagePointToView(
                             p = it,
-                            imageW = 1280, imageH = 720,
+                            imageW = state.imageW,
+                            imageH = state.imageH,
                             rotationDeg = previewRotation,
                             viewW = size.width, viewH = size.height,
                         )
                     }
-                    val xs = pts.map { it.x }
-                    val ys = pts.map { it.y }
-                    drawRect(
+                    // 画真实四边形（tl→tr→br→bl→闭合），而非外接矩形
+                    drawPath(
+                        path = Path().apply {
+                            moveTo(pts[0].x, pts[0].y)
+                            lineTo(pts[1].x, pts[1].y)
+                            lineTo(pts[2].x, pts[2].y)
+                            lineTo(pts[3].x, pts[3].y)
+                            close()
+                        },
                         color = Color(0xFF3DDC84),
-                        topLeft = Offset(xs.min(), ys.min()),
-                        size = Size(xs.max() - xs.min(), ys.max() - ys.min()),
                         style = Stroke(width = 4.dp.toPx()),
                     )
                 }

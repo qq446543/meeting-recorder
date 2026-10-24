@@ -18,7 +18,7 @@
 - minSdk 26、targetSdk 35、compileSdk 36；targetSdk 固定 35 以规避更高版本后台限制。
 - 不申请 `INTERNET` 权限（应用完全离线）；不申请任何存储权限（文件存 app 私有目录，导出走 SAF）。
 - 同页去重采用方向性三判据（见 Task 5 与 spec §7 修订版）：`recall ≥ 0.90`、`fgOldSim ≥ 0.85`、`coverage ≥ 0.90` 三者同时满足才判同页；阈值全部集中在 `DedupeConfig`，不得散落魔法数。任何改动必须先让 `SlideDeduplicatorTest` 的"同页累积内容"用例通过。
-- 稳定判定 `stableMad = 2.0f`、连续 `5` 帧、变化阈值 `changeMad = 4.0f`、抓拍冷却 `400ms`，全部集中在 `StabilityDetector` 的构造参数默认值。
+- 稳定判定 `stableMad = 6.0f`、连续 `10` 帧、变化阈值 `changeMad = 2.5f`、抓拍冷却 `400ms`，全部集中在 `StabilityDetector` 的构造参数默认值（真机验收第一轮调参：宁可多拍不可漏拍，漏拍不可恢复，多拍由同页去重兜底）。
 - 文档矫正输出宽度上限 `1600px`；质量门 `laplacianVar ≥ 60`、平均亮度 `25–235`、宽高比 `0.6–2.5`。
 - 所有纯逻辑（算法、判定、几何）必须是不依赖 Android 框架的 Kotlin 对象/类，放在 JVM 单元测试可覆盖的路径下；`Bitmap`/`CameraX`/`Room` 仅作为薄适配层。
 - 每个任务结束必须 `git add` + `git commit`，提交信息用 `feat:` / `fix:` / `test:` / `build:` 前缀。
@@ -2947,7 +2947,7 @@ git commit -m "feat: 同页去重算法（方向性三判据）"
 **Interfaces:**
 - Consumes: 无（纯 Kotlin + `java.nio.ByteBuffer`）
 - Produces:
-  - `object AnalysisConfig`：`W = 64`、`H = 36`、`STABLE_MAD = 2.0f`、`STABLE_FRAMES = 5`、`CHANGE_MAD = 4.0f`、`COOLDOWN_MS = 400L`
+  - `object AnalysisConfig`：`W = 64`、`H = 36`、`STABLE_MAD = 6.0f`、`STABLE_FRAMES = 10`、`CHANGE_MAD = 2.5f`、`COOLDOWN_MS = 400L`（真机验收第一轮调参：噪声 ±1–4 低于 6.0；10 帧 ≈ 333ms 覆盖 300–500ms 翻页动画；bullet 级变化 ≈ 3.6 高于 2.5；原则「宁可多拍不可漏拍，多拍由同页去重兜底」）
   - `data class FrameGrid(val width: Int, val height: Int, val values: IntArray)`（`values` 为 0..255 亮度，行优先）
   - `fun meanAbsDiff(a: FrameGrid, b: FrameGrid): Float`
   - `object YuvFrames { fun toGrid(y: ByteBuffer, imageWidth: Int, imageHeight: Int, rowStride: Int, pixelStride: Int, outW: Int = AnalysisConfig.W, outH: Int = AnalysisConfig.H): FrameGrid }`
@@ -3052,13 +3052,26 @@ Expected: FAIL，`unresolved reference: YuvFrames / FrameGrid`。
 ```kotlin
 package com.meetnote.recorder.capture
 
-/** 分析用参数集中于此（spec §6.2） */
+/**
+ * 分析用参数集中于此（spec §6.2）。
+ *
+ * 调参总原则（真机验收第一轮，OnePlus 13）：宁可多拍不可漏拍
+ * （漏拍不可恢复，多拍由同页去重兜底）。
+ */
 object AnalysisConfig {
     const val W = 64
     const val H = 36
-    const val STABLE_MAD = 2.0f
-    const val STABLE_FRAMES = 5
-    const val CHANGE_MAD = 4.0f
+
+    /** 稳定判定 MAD 阈值：真机传感器噪声约 ±1–4，旧值 2.0 永远判不稳定（漏拍根因）；6.0 放噪声通过，翻页动画的 30/140 仍远高于它 */
+    const val STABLE_MAD = 6.0f
+
+    /** 连续稳定帧数：10 帧 ≈ 333ms，覆盖 300–500ms 翻页动画收尾（旧值 5 帧 ≈ 165ms 会拍到动画中间态） */
+    const val STABLE_FRAMES = 10
+
+    /** 内容变化 MAD 阈值：PPT 逐条动画（bullet 级）约 3.6，旧值 4.0 会漏拍；2.5 能触发，多拍由 DedupeConfig 同页去重兜底（页数不涨） */
+    const val CHANGE_MAD = 2.5f
+
+    /** 抓拍冷却：400ms 内不重复触发，防连拍风暴（只延迟不吞掉触发） */
     const val COOLDOWN_MS = 400L
 }
 
@@ -4227,8 +4240,8 @@ git commit -m "feat: OpenCV 透视矫正与 native 加载降级"
 **Interfaces:**
 - Consumes: Task 2 `MeetingRepository.observePages / meeting`、Task 4 `RecordingState.status / MeetingService.start`、Task 7 `Quad / Point2`、Task 6 `AnalysisConfig`
 - Produces:
-  - `data class CaptureUiState(title, statusText, pageCount, paused, recording: RecordingStatus, quad: Quad?, degraded: Boolean, opencvAvailable: Boolean)`
-  - `class CaptureViewModel(meetingId: Long, repo: MeetingRepository)`：`val ui: StateFlow<CaptureUiState>`、`fun togglePause(): Boolean`（返回新状态）、`fun onPipelineStatus(text: String, quad: Quad?, degraded: Boolean)`、`fun setPageCount(n: Int)`
+  - `data class CaptureUiState(title, statusText, pageCount, paused, recording: RecordingStatus, quad: Quad?, degraded: Boolean, opencvAvailable: Boolean, imageW: Int = 1280, imageH: Int = 720)`
+  - `class CaptureViewModel(meetingId: Long, repo: MeetingRepository)`：`val ui: StateFlow<CaptureUiState>`、`fun togglePause(): Boolean`（返回新状态）、`fun onPipelineStatus(text: String, quad: Quad?, degraded: Boolean, imageW: Int? = null, imageH: Int? = null)`（null = 保持当前尺寸，阶段状态不回退已存抓拍尺寸）、`fun setPageCount(n: Int)`
   - `object PreviewOverlay { fun mapImagePointToView(p: Point2, imageW: Int, imageH: Int, rotationDeg: Int, viewW: Float, viewH: Float): Point2 }`
   - `class CameraBinder(owner: LifecycleOwner, context: Context)`：
     `fun bind(surfaceProvider: Preview.SurfaceProvider): Preview?`、`fun setAnalyzer(a: ImageAnalysis.Analyzer?)`、`fun takePicture(executor: Executor, onBitmap: (Bitmap?) -> Unit)`、`fun unbind()`
@@ -4528,6 +4541,9 @@ data class CaptureUiState(
     val recording: RecordingStatus = RecordingStatus(),
     val quad: Quad? = null,
     val degraded: Boolean = false,
+    /** 拍摄原图尺寸（quad 在原图坐标系，绿框叠加层据此换算）；未拍到前用常见预览尺寸兜底 */
+    val imageW: Int = 1280,
+    val imageH: Int = 720,
 )
 
 class CaptureViewModel(
@@ -4562,8 +4578,28 @@ class CaptureViewModel(
         return next
     }
 
-    fun onPipelineStatus(text: String, quad: Quad?, degraded: Boolean) {
-        _ui.update { it.copy(statusText = text, quad = quad, degraded = degraded) }
+    /**
+     * 流水线状态 → UI。
+     * 真机验收第一轮：状态可携带拍摄原图尺寸（imageW/imageH），供绿框叠加层换算坐标。
+     * 关键规则：null 表示"保持当前值"——阶段类状态（正在观察画面…等）不带尺寸，
+     * 绝不能把已存的抓拍尺寸（如 1920×1080）打回 1280×720 默认值。
+     */
+    fun onPipelineStatus(
+        text: String,
+        quad: Quad?,
+        degraded: Boolean,
+        imageW: Int? = null,
+        imageH: Int? = null,
+    ) {
+        _ui.update {
+            it.copy(
+                statusText = text,
+                quad = quad,
+                degraded = degraded,
+                imageW = imageW ?: it.imageW,
+                imageH = imageH ?: it.imageH,
+            )
+        }
     }
 
     fun refreshPageCount(n: Int) {
@@ -4770,9 +4806,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -4910,23 +4945,28 @@ fun CaptureScreen(
         Box(Modifier.fillMaxSize().padding(padding)) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-            // 检测框叠加层
+            // 检测框叠加层：quad 在拍摄原图坐标系，用状态携带的原图尺寸换算（真机验收 H4：不再硬编码 1280×720）
             if (quad != null) {
                 Canvas(Modifier.fillMaxSize()) {
                     val pts = listOf(quad.tl, quad.tr, quad.br, quad.bl).map {
                         PreviewOverlay.mapImagePointToView(
                             p = it,
-                            imageW = 1280, imageH = 720,
+                            imageW = state.imageW,
+                            imageH = state.imageH,
                             rotationDeg = previewRotation,
                             viewW = size.width, viewH = size.height,
                         )
                     }
-                    val xs = pts.map { it.x }
-                    val ys = pts.map { it.y }
-                    drawRect(
+                    // 画真实四边形（tl→tr→br→bl→闭合），而非外接矩形
+                    drawPath(
+                        path = Path().apply {
+                            moveTo(pts[0].x, pts[0].y)
+                            lineTo(pts[1].x, pts[1].y)
+                            lineTo(pts[2].x, pts[2].y)
+                            lineTo(pts[3].x, pts[3].y)
+                            close()
+                        },
                         color = Color(0xFF3DDC84),
-                        topLeft = Offset(xs.min(), ys.min()),
-                        size = Size(xs.max() - xs.min(), ys.max() - ys.min()),
                         style = Stroke(width = 4.dp.toPx()),
                     )
                 }
@@ -5008,7 +5048,7 @@ git commit -m "feat: 拍摄页预览、权限、常亮与绿框映射"
 **Interfaces:**
 - Consumes: `StabilityDetector.onFrame`（Task 6）、`YuvFrames.toGrid`（Task 6）、`DocumentCorrector.correct`（Task 8）、`QuadMath` / `QualityGate`（Task 7）、`SignalBuilder` / `SlideDeduplicator.compare`（Task 5）、`MeetingRepository.targetFileFor / registerShot / observePages`（Task 2/5）
 - Produces:
-  - `data class PipelineStatus(val text: String, val quad: Quad? = null, val degraded: Boolean = false, val shot: ShotResult? = null)`
+  - `data class PipelineStatus(val text: String, val quad: Quad? = null, val degraded: Boolean = false, val shot: ShotResult? = null, val imageW: Int? = null, val imageH: Int? = null)`
   - `class CapturePipeline(meetingId: Long, repository: MeetingRepository, scope: CoroutineScope, ioContext: CoroutineContext = Dispatchers.IO, correct: (Bitmap) -> Correction = DocumentCorrector()::correct, onStatus: (PipelineStatus) -> Unit = {})`
     - `var onPictureRequest: () -> Unit`（由拍摄页注入，触发 `binder.takePicture`）
     - `fun analyze(grid: FrameGrid, tsMs: Long)`
@@ -5302,6 +5342,9 @@ data class PipelineStatus(
     val quad: Quad? = null,
     val degraded: Boolean = false,
     val shot: ShotResult? = null,
+    /** 拍摄原图尺寸（quad 在原图坐标系；叠加层据此换算坐标）。阶段类状态不带尺寸 → null */
+    val imageW: Int? = null,
+    val imageH: Int? = null,
 )
 
 /**
@@ -5337,13 +5380,31 @@ class CapturePipeline(
         if (!paused) stability.reset()
     }
 
+    /** 最近一次发出的阶段文案：仅在阶段切换时上报（真机验收 H2：判定过程必须可见，但绝不逐帧刷屏） */
+    private var lastStage: String? = null
+
     fun analyze(grid: FrameGrid, tsMs: Long) {
         if (paused || inFlight) return
         val verdict = stability.onFrame(grid, tsMs)
         if (verdict is Verdict.CaptureNow) {
             inFlight = true
             onPictureRequest()
+            return
         }
+        emitStage(verdict)
+    }
+
+    /** 阶段判定 → 状态文案；连续同阶段不重复上报，CaptureNow 本身不发阶段行（拍摄状态另发） */
+    private fun emitStage(verdict: Verdict) {
+        val text = when (verdict) {
+            Verdict.Initialising -> "正在观察画面…"
+            Verdict.Stabilising -> "画面有变化，等待稳定…"
+            Verdict.NoChange -> "画面已稳定，等待翻页"
+            Verdict.CaptureNow -> return
+        }
+        if (text == lastStage) return
+        lastStage = text
+        onStatus(PipelineStatus(text))
     }
 
     /** 手动快门：跳过稳定判定直接拍 */
@@ -5377,7 +5438,7 @@ class CapturePipeline(
         val degraded = detectFailures >= DEGRADE_AFTER
         val image = correction.bitmap
 
-        // 2. 质量门：不过就静默丢弃（spec §12）
+        // 2. 质量门：不过就丢弃，但必须可见（spec §12 禁止静默阻断），并带上原图尺寸供绿框换算
         val pixels = IntArray(image.width * image.height)
         image.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
         val gray = QualityGate.grayOf(pixels)
@@ -5385,7 +5446,17 @@ class CapturePipeline(
             ?: image.width.toFloat() / image.height
         val lap = QualityGate.laplacianVariance(gray, image.width, image.height)
         if (!QualityGate.accept(lap, QualityGate.meanLuma(gray), aspect)) {
-            return   // 画面模糊/过亮/比例异常：丢弃候选，继续监测
+            // 画面模糊/过亮/比例异常：丢弃候选、继续监测，让拍摄者知道这帧没算数
+            onStatus(
+                PipelineStatus(
+                    text = "画面模糊或过亮，已跳过，继续监测…",
+                    quad = correction.quad,
+                    degraded = degraded,
+                    imageW = source.width,
+                    imageH = source.height,
+                ),
+            )
+            return
         }
 
         // 3. 同页判定
@@ -5415,6 +5486,8 @@ class CapturePipeline(
                 quad = correction.quad,
                 degraded = degraded,
                 shot = result,
+                imageW = source.width,
+                imageH = source.height,
             ),
         )
     }
@@ -5466,7 +5539,7 @@ Expected: 8 tests PASS。
             repository = repository,
             scope = androidx.lifecycle.lifecycleScope,
             correct = DocumentCorrector()::correct,
-            onStatus = { st -> vm.onPipelineStatus(st.text, st.quad, st.degraded) },
+            onStatus = { st -> vm.onPipelineStatus(st.text, st.quad, st.degraded, st.imageW, st.imageH) },
         )
     }
     pipeline.onPictureRequest = {

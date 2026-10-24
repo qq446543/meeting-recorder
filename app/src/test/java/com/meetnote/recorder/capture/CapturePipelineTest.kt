@@ -82,8 +82,8 @@ class CapturePipelineTest {
         p.onPictureRequest = { pictureRequests++ }
     }
 
-    /** 模拟分析帧序列直到产生抓拍请求 */
-    private fun feedStable(p: CapturePipeline, startTs: Long = 0L, n: Int = 8, value: Int = 100) {
+    /** 模拟分析帧序列直到产生抓拍请求（基线需 STABLE_FRAMES + 1 帧才到 CaptureNow） */
+    private fun feedStable(p: CapturePipeline, startTs: Long = 0L, n: Int = AnalysisConfig.STABLE_FRAMES + 1, value: Int = 100) {
         repeat(n) { i -> p.analyze(grid(value), startTs + i * 33L) }
     }
 
@@ -169,12 +169,17 @@ class CapturePipelineTest {
     }
 
     @Test
-    fun `quality gate silently drops bad frames`() = runBlocking {
+    fun `quality gate drops bad frames and reports the skip`() = runBlocking {
         val p = pipeline()
-        p.onPicture(flat())                // 纯灰图，清晰度为 0
+        p.onPicture(flat(320, 180))         // 纯灰图，清晰度为 0
 
+        // 原意图保留：坏帧绝不落库；新增（真机验收裁定）：跳过必须可见，且带上原图尺寸
         assertEquals(0, pageCount())
-        assertTrue(statuses.isEmpty())
+        val st = statuses.single()
+        assertEquals("画面模糊或过亮，已跳过，继续监测…", st.text)
+        assertFalse(st.degraded)
+        assertEquals(320, st.imageW)
+        assertEquals(180, st.imageH)
     }
 
     @Test
@@ -237,5 +242,41 @@ class CapturePipelineTest {
         p.forceCapture()
         p.forceCapture()
         assertEquals(1, pictureRequests)
+    }
+
+    @Test
+    fun `detector stages emit status only on transition`() {
+        val p = pipeline()
+        // 首帧 Initialising → 发一次"正在观察画面…"
+        p.analyze(grid(100), 0L)
+        // 连续 15 个抖动帧（同一 Stabilising 阶段）→ 只应发一次，防逐帧刷屏
+        repeat(15) { i -> p.analyze(grid(100 + (i % 2) * 30), 33L + i * 33L) }
+        // 稳定帧攒满 STABLE_FRAMES 后触发抓拍（inFlight 期间后续帧被丢弃）
+        repeat(11) { i -> p.analyze(grid(100), 600L + i * 33L) }
+        assertEquals(1, pictureRequests)
+        // 拍摄失败复位 inFlight；画面内容未变 → 稳定后进入 NoChange
+        p.onPicture(null)
+        // 同一画面继续喂 15 帧：NoChange 只应发一次
+        repeat(15) { i -> p.analyze(grid(100), 10_000L + i * 33L) }
+
+        val stages = statuses.map { it.text }.filter {
+            it == "正在观察画面…" || it == "画面有变化，等待稳定…" || it == "画面已稳定，等待翻页"
+        }
+        assertEquals(
+            listOf("正在观察画面…", "画面有变化，等待稳定…", "画面已稳定，等待翻页"),
+            stages,
+        )
+    }
+
+    @Test
+    fun `status carries source image dimensions for the overlay`() = runBlocking {
+        val p = pipeline()
+        p.onPicture(striped(480, 270))
+
+        val st = statuses.last()
+        assertTrue(st.text.contains("第 1 页"))
+        // 绿框叠加层要用拍摄原图尺寸换算坐标（quad 在原图坐标系）
+        assertEquals(480, st.imageW)
+        assertEquals(270, st.imageH)
     }
 }

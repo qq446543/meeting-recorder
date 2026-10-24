@@ -98,10 +98,18 @@ class CaptureViewModelTest {
         vm.onPipelineStatus("已拍第 3 页", quad = null, degraded = false)
         assertEquals("已拍第 3 页", vm.ui.value.statusText)
         assertFalse(vm.ui.value.degraded)
+        // 默认参数：未带尺寸时保持预置默认值（1280×720，首拍前行为不变）
+        assertEquals(1280, vm.ui.value.imageW)
+        assertEquals(720, vm.ui.value.imageH)
 
         vm.onPipelineStatus("未检测到屏幕边缘", quad = null, degraded = true)
         assertTrue(vm.ui.value.degraded)
         assertNotNull(vm.ui.value.statusText)
+
+        // 真机验收第一轮：状态携带拍摄原图尺寸，供绿框叠加层换算坐标
+        vm.onPipelineStatus("已拍第 4 页", quad = null, degraded = false, imageW = 1920, imageH = 1080)
+        assertEquals(1920, vm.ui.value.imageW)
+        assertEquals(1080, vm.ui.value.imageH)
     }
 
     @Test
