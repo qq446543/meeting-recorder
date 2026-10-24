@@ -18,7 +18,7 @@
 - minSdk 26、targetSdk 35、compileSdk 36；targetSdk 固定 35 以规避更高版本后台限制。
 - 不申请 `INTERNET` 权限（应用完全离线）；不申请任何存储权限（文件存 app 私有目录，导出走 SAF）。
 - 同页去重采用方向性三判据（见 Task 5 与 spec §7 修订版）：`recall ≥ 0.90`、`fgOldSim ≥ 0.85`、`coverage ≥ 0.90` 三者同时满足才判同页；阈值全部集中在 `DedupeConfig`，不得散落魔法数。任何改动必须先让 `SlideDeduplicatorTest` 的"同页累积内容"用例通过。
-- 稳定判定 `stableMad = 6.0f`、连续 `10` 帧、变化阈值 `changeMad = 2.5f`、抓拍冷却 `400ms`，全部集中在 `StabilityDetector` 的构造参数默认值（真机验收第一轮调参：宁可多拍不可漏拍，漏拍不可恢复，多拍由同页去重兜底）。
+- 稳定判定 `stableMad = 6.0f`、连续 `10` 帧、变化阈值 `changeMad = 2.5f`、抓拍冷却 `400ms`、整页明暗翻转兜底 `globalShiftMad = 12.0f`，全部集中在 `StabilityDetector` 的构造参数默认值（真机验收第一轮调参：宁可多拍不可漏拍，漏拍不可恢复，多拍由同页去重兜底；真机验收第二轮：稳定/变化判定改用去整体亮度居中 MAD `meanCenteredAbsDiff`——曝光闪变/AE 漂移不再算变化也不再重置稳定计数，`GLOBAL_SHIFT_MAD` 兜底整页明暗翻转，同页去重放宽后兜底网已足够可靠）。
 - 文档矫正输出宽度上限 `1600px`；质量门 `laplacianVar ≥ 60`、平均亮度 `25–235`、宽高比 `0.6–2.5`。
 - 所有纯逻辑（算法、判定、几何）必须是不依赖 Android 框架的 Kotlin 对象/类，放在 JVM 单元测试可覆盖的路径下；`Bitmap`/`CameraX`/`Room` 仅作为薄适配层。
 - 每个任务结束必须 `git add` + `git commit`，提交信息用 `feat:` / `fix:` / `test:` / `build:` 前缀。
@@ -2476,7 +2476,9 @@ fgOldSim   = 旧页墨迹区域的细网格灰度相似度       → 换了文�
 coverage   = 新帧墨迹量 / 旧页墨迹量              → 排除"新帧内容变少"（动画中间态）
 
 同页 ⟺ recall ≥ 0.90 且 fgOldSim ≥ 0.85 且 coverage ≥ 0.90
-否则 → 新页（宁可多留一页，不丢内容）
+否则 → 新页。方向（真机验收第二轮，用户裁定反转）：近似重复帧（同一张页面的
+曝光/对齐抖动）必须收敛为一页——只保留最后完整的那张（覆盖语义）；真正不同的
+页面绝不能被合并（recall/coverage/fg 合取护栏，内容丢失不可恢复，护栏用例绝不放宽）。
 ```
 
 **Files:**
@@ -2562,6 +2564,15 @@ class SlideDeduplicatorTest {
     }
 
     private fun signals(pixels: IntArray) = SignalBuilder.fromPixels(pixels, w, h)
+
+    // —— 真机验收第二轮新增（同页去重放宽至可吸收曝光/对齐抖动，FG_TOLERANCE=0.30f）——
+    // 新夹具：lifted(+10/255 整体提亮，模拟 AE 漂移)、shiftedRight(dx 像素，模拟对齐抖动)、
+    // slideWithThresholdBand(贴近 0.72 阈值的浅灰行，建模掩码抖动)、
+    // textCoveredByDarkFigure(深色图示盖字护栏)。
+    // 新用例：`exposure lifted duplicate stays ONE page`(fg≈0.869)、
+    // `exposure lifted duplicate with ink mask flips stays ONE page`(recall≈0.940)、
+    // `sub cell alignment jitter stays ONE page`(2px 错位 fg≈0.996)、
+    // `dark text covered by dark figure is NOT same page`(护栏，fg≈0.731 < 0.85)。
 
     @Test
     fun `identical page is same page with perfect score`() {
@@ -2675,18 +2686,25 @@ object DedupeConfig {
      * fgOldSim 的逐格缩放系数（**非死区容差**）：每格相似度 =
      * `1 - min(1, |Δ灰度| / FG_TOLERANCE)`。小于该值的漂移同样被线性放大惩罚
      * （Δ=0.05 → 该格 0.50），并非"不超即视为不变"。存在意义：深色文字被深色
-     * 图示整块盖住时每格均值差仅 ~0.17，纯绝对差度量实测 0.8514 > 0.85 会误判同页。
+     * 图示整块盖住时每格均值差仅 ~0.17，纯绝对差度量实测 0.8514 > 0.85 会误判同页
+     * （护栏用例 `dark text covered by dark figure is NOT same page` 锁死该场景）。
      *
-     * 漂移预算：在 SAME_FG=0.85 下，均匀曝光/对齐漂移预算 ≈ FG_TOLERANCE × 0.15
-     * = 0.015（约 4/255 灰阶），比纯绝对差度量（预算 0.15）紧约 10 倍。
-     * 方向安全：逐格 min(1, ·) 截断使 fgOldSim 只会低于纯绝对差版本，只会把
-     * 同页翻成新页（宁可多留一页），不会把新页翻成同页。
+     * 漂移预算（真机验收第二轮）：在 SAME_FG=0.85 下，均匀曝光/对齐漂移预算
+     * ≈ FG_TOLERANCE × 0.15 = 0.30 × 0.15 = 0.045（约 11.5/255 灰阶），
+     * 覆盖真机 AE 漂移（±4 灰阶）+ 四边形矫正对齐抖动（±2px 细格错位），
+     * 同一张页面多次拍摄收敛为一页（只保留最后完整的那张，覆盖语义）。
      *
-     * 真机复核（spec §15 风险 #4，首次真机调参）：必须用累积内容场景在曝光/对齐
-     * 漂移下验证仍判同页；若被误判为新页，调高 FG_TOLERANCE 放宽（调低只会收紧、
-     * 更易误判新页），配合 `adb logcat -s Dedupe` 观察 recall/fg/cov 定位掉线项。
+     * 方向（用户裁定，真机验收第二轮反转）：近似重复帧（同一张页面，曝光/对齐
+     * 抖动）必须收敛为最后那次完整拍摄；**真正不同的页面绝不能被合并**——内容
+     * 丢失不可恢复，recall/coverage/fg 三条件合取即为此设，护栏用例（换文字、
+     * 深色图示盖字、内容变少、空白页）绝不放宽。0.30 时"深色图示盖字"场景
+     * fg ≈ 1 − 0.17/0.30 ≈ 0.44 < 0.85，护栏依旧成立。
+     *
+     * 真机复核（spec §15 风险 #4，真机验收第二轮后）：用 `adb logcat -s Dedupe`
+     * 逐张观察 recall/fg/cov（loopback 已验证可读）；若同一张页面仍分裂成多页，
+     * 下一轮直接读每张的 recall/fg/cov，定位是哪个条件掉线再调对应阈值。
      */
-    const val FG_TOLERANCE = 0.10f
+    const val FG_TOLERANCE = 0.30f
 
     /** 汇报用的综合分，仅用于日志与调参显示，不参与判定 */
     const val RECALL_WEIGHT = 0.5f
@@ -2938,7 +2956,7 @@ git commit -m "feat: 同页去重算法（方向性三判据）"
 这是"翻页动画不误拍、内容没变不重拍、画面稳定才拍"三条规则的唯一实现处，必须可单测。
 
 **Files:**
-- Create: `app/src/main/java/com/meetnote/recorder/capture/FrameGrid.kt`（含 `AnalysisConfig`、`meanAbsDiff`）
+- Create: `app/src/main/java/com/meetnote/recorder/capture/FrameGrid.kt`（含 `AnalysisConfig`、`meanAbsDiff`、`meanOf`、`meanCenteredAbsDiff`）
 - Create: `app/src/main/java/com/meetnote/recorder/capture/YuvFrames.kt`
 - Create: `app/src/main/java/com/meetnote/recorder/capture/StabilityDetector.kt`
 - Test: `app/src/test/java/com/meetnote/recorder/capture/StabilityDetectorTest.kt`
@@ -2947,12 +2965,14 @@ git commit -m "feat: 同页去重算法（方向性三判据）"
 **Interfaces:**
 - Consumes: 无（纯 Kotlin + `java.nio.ByteBuffer`）
 - Produces:
-  - `object AnalysisConfig`：`W = 64`、`H = 36`、`STABLE_MAD = 6.0f`、`STABLE_FRAMES = 10`、`CHANGE_MAD = 2.5f`、`COOLDOWN_MS = 400L`（真机验收第一轮调参：噪声 ±1–4 低于 6.0；10 帧 ≈ 333ms 覆盖 300–500ms 翻页动画；bullet 级变化 ≈ 3.6 高于 2.5；原则「宁可多拍不可漏拍，多拍由同页去重兜底」）
+  - `object AnalysisConfig`：`W = 64`、`H = 36`、`STABLE_MAD = 6.0f`、`STABLE_FRAMES = 10`、`CHANGE_MAD = 2.5f`、`COOLDOWN_MS = 400L`、`GLOBAL_SHIFT_MAD = 12.0f`（真机验收第一轮调参：噪声 ±1–4 低于 6.0；10 帧 ≈ 333ms 覆盖 300–500ms 翻页动画；bullet 级变化 ≈ 3.6 高于 2.5；原则「宁可多拍不可漏拍，多拍由同页去重兜底」。真机验收第二轮：判定改用去整体亮度居中 MAD——曝光闪变/AE 漂移不再算变化也不再重置稳定计数；`GLOBAL_SHIFT_MAD` 兜底整页明暗翻转，值 12.0 远高于 AE 漂移 ±4、远低于真实翻转 ~100+）
   - `data class FrameGrid(val width: Int, val height: Int, val values: IntArray)`（`values` 为 0..255 亮度，行优先）
   - `fun meanAbsDiff(a: FrameGrid, b: FrameGrid): Float`
+  - `fun meanOf(grid: FrameGrid): Float`
+  - `fun meanCenteredAbsDiff(a: FrameGrid, b: FrameGrid): Float`（两帧各减自身均值后再取平均绝对差，0..255 灰阶）
   - `object YuvFrames { fun toGrid(y: ByteBuffer, imageWidth: Int, imageHeight: Int, rowStride: Int, pixelStride: Int, outW: Int = AnalysisConfig.W, outH: Int = AnalysisConfig.H): FrameGrid }`
   - `sealed interface Verdict`：`Initialising`、`Stabilising`、`NoChange`、`CaptureNow`
-  - `class StabilityDetector(stableMad: Float = AnalysisConfig.STABLE_MAD, stableFrames: Int = AnalysisConfig.STABLE_FRAMES, changeMad: Float = AnalysisConfig.CHANGE_MAD, cooldownMs: Long = AnalysisConfig.COOLDOWN_MS)`：`fun onFrame(grid: FrameGrid, tsMs: Long): Verdict`、`fun reset()`
+  - `class StabilityDetector(stableMad: Float = AnalysisConfig.STABLE_MAD, stableFrames: Int = AnalysisConfig.STABLE_FRAMES, changeMad: Float = AnalysisConfig.CHANGE_MAD, cooldownMs: Long = AnalysisConfig.COOLDOWN_MS, globalShiftMad: Float = AnalysisConfig.GLOBAL_SHIFT_MAD)`：`fun onFrame(grid: FrameGrid, tsMs: Long): Verdict`、`fun reset()`
   - `capture/FrameGrid.kt` 另含 `fun FrameGrid.withValue(v: Int): FrameGrid`（测试构造用，生产不用）
 
 - [ ] **Step 1: 写 YuvFrames 失败测试**
@@ -3056,23 +3076,38 @@ package com.meetnote.recorder.capture
  * 分析用参数集中于此（spec §6.2）。
  *
  * 调参总原则（真机验收第一轮，OnePlus 13）：宁可多拍不可漏拍
- * （漏拍不可恢复，多拍由同页去重兜底）。
+ * （漏拍不可恢复，多拍由同页去重兜底——真机验收第二轮把同页去重放宽后，
+ * 这张兜底网已足够可靠，可吸收残余误触发）。
+ *
+ * 真机验收第二轮语义变更：稳定/变化判定全部改用**去整体亮度漂移的对比**
+ * （[meanCenteredAbsDiff]，两帧各减自身均值后再取平均绝对差）：
+ * 曝光闪变/AE 反馈漂移（真机实测 ±4 灰阶）是全局加性亮度平移，居中后 ≈ 0，
+ * 不再算变化也不再重置稳定计数；局部内容变化（新要点、翻页）照常触发。
+ * 整页明暗翻转（白底→黑底，两帧都是平场，居中 MAD ≈ 0）由
+ * [GLOBAL_SHIFT_MAD] 均值位移兜底触发。
  */
 object AnalysisConfig {
     const val W = 64
     const val H = 36
 
-    /** 稳定判定 MAD 阈值：真机传感器噪声约 ±1–4，旧值 2.0 永远判不稳定（漏拍根因）；6.0 放噪声通过，翻页动画的 30/140 仍远高于它 */
+    /** 稳定判定（居中 MAD）阈值：真机传感器噪声与 AE 漂移在居中后 ≈ 0，6.0 仍放噪声通过，翻页动画的 30/140 仍远高于它 */
     const val STABLE_MAD = 6.0f
 
     /** 连续稳定帧数：10 帧 ≈ 333ms，覆盖 300–500ms 翻页动画收尾（旧值 5 帧 ≈ 165ms 会拍到动画中间态） */
     const val STABLE_FRAMES = 10
 
-    /** 内容变化 MAD 阈值：PPT 逐条动画（bullet 级）约 3.6，旧值 4.0 会漏拍；2.5 能触发，多拍由 DedupeConfig 同页去重兜底（页数不涨） */
+    /** 内容变化（居中 MAD）阈值：PPT 逐条动画（bullet 级）约 3.6，旧值 4.0 会漏拍；2.5 能触发，多拍由 DedupeConfig 同页去重兜底（页数不涨） */
     const val CHANGE_MAD = 2.5f
 
     /** 抓拍冷却：400ms 内不重复触发，防连拍风暴（只延迟不吞掉触发） */
     const val COOLDOWN_MS = 400L
+
+    /**
+     * 整页明暗翻转兜底：两帧都是平场时居中 MAD ≈ 0，仅靠它会把"白底页翻黑底页"判成没变化。
+     * 帧均值位移超过本值即视为变化（走同一条 CaptureNow 路径）。
+     * 12.0 远高于真机 AE 反馈漂移（±4），远低于真实明暗翻转（~100+）
+     */
+    const val GLOBAL_SHIFT_MAD = 12.0f
 }
 
 /** 降采样后的亮度网格，0..255，行优先 */
@@ -3106,6 +3141,29 @@ fun meanAbsDiff(a: FrameGrid, b: FrameGrid): Float {
         sum += kotlin.math.abs(a.values[i] - b.values[i])
     }
     return sum.toFloat() / a.values.size
+}
+
+/** 帧平均灰度，取值 0..255（供整页明暗翻转兜底判定用） */
+fun meanOf(grid: FrameGrid): Float {
+    var sum = 0L
+    for (v in grid.values) sum += v
+    return sum.toFloat() / grid.values.size
+}
+
+/**
+ * 去整体亮度漂移的平均绝对差：两帧各减去自身均值后再逐格取绝对差平均，取值 0..255。
+ * 全局加性亮度平移（曝光闪变 / AE 反馈漂移）在两帧中同减后 ≈ 0，不影响判定；
+ * 局部结构变化（新要点、翻页）的量级与 [meanAbsDiff] 一致（同为灰阶）。
+ */
+fun meanCenteredAbsDiff(a: FrameGrid, b: FrameGrid): Float {
+    require(a.width == b.width && a.height == b.height) { "网格尺寸不一致" }
+    val meanA = meanOf(a)
+    val meanB = meanOf(b)
+    var sum = 0.0
+    for (i in a.values.indices) {
+        sum += kotlin.math.abs((a.values[i] - meanA) - (b.values[i] - meanB))
+    }
+    return (sum / a.values.size).toFloat()
 }
 ```
 
@@ -3188,6 +3246,19 @@ class StabilityDetectorTest {
         FrameGrid(AnalysisConfig.W, AnalysisConfig.H,
             IntArray(AnalysisConfig.W * AnalysisConfig.H) { value })
 
+    /** 基底上翻转一块矩形区域的亮度：空间结构变化（整体亮度居中后仍保留差异） */
+    private fun gridWithPatch(base: Int, patch: Int, x0: Int, x1: Int, y0: Int, y1: Int): FrameGrid {
+        val values = IntArray(AnalysisConfig.W * AnalysisConfig.H) { base }
+        for (y in y0 until y1) for (x in x0 until x1) values[y * AnalysisConfig.W + x] = patch
+        return FrameGrid(AnalysisConfig.W, AnalysisConfig.H, values)
+    }
+
+    /** 左右交替的空间抖动（手抖/翻页动画建模）。原用整体亮度交替（100/130）建模，
+     *  真机验收第二轮改去亮度居中对比后，纯亮度差恒为 0 不再算"抖动"，必须换成空间变化 */
+    private fun shaking(i: Int): FrameGrid =
+        if (i % 2 == 0) gridWithPatch(100, 40, 0, 32, 0, 36)
+        else gridWithPatch(100, 40, 32, 64, 0, 36)
+
     @Test
     fun `first frame only initialises`() {
         assertEquals(Verdict.Initialising, detector().onFrame(grid(100), 0L))
@@ -3220,7 +3291,9 @@ class StabilityDetectorTest {
         val d = detector()
         var last: Verdict = Verdict.Initialising
         for (i in 0 until 40) {
-            last = d.onFrame(grid(100 + (i % 2) * 30), i * 33L)   // 帧间差 30 > 2.0
+            // 空间抖动：左右交替的补丁使居中 MAD ≈ 60，远高于任何合理 STABLE_MAD
+            //（阈值无关的写法不变；原整体亮度交替 100/130 在居中对比下差为 0，已失效）
+            last = d.onFrame(shaking(i), i * 33L)
         }
         assertEquals(Verdict.Stabilising, last)
     }
@@ -3240,18 +3313,30 @@ class StabilityDetectorTest {
     @Test
     fun `content change triggers new capture`() {
         val d = detector()
-        // 基线：稳定 + 首拍
-        (0 until 6).forEach { i -> d.onFrame(grid(100), i * 33L) }
-        // 翻页：先抖几帧（动画），再稳定
-        val verdicts = (6 until 6 + 12).map { i ->
-            val v = d.onFrame(grid(if (i < 9) 60 else 200), i * 33L)
-            v
+        // 基线：稳定 + 首拍（基线需 STABLE_FRAMES + 1 帧才到 CaptureNow，首拍 ts = STABLE_FRAMES*33 = 330）
+        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(grid(100), i * 33L) }
+        // 翻页：先抖几帧（动画，空间变化建模——整体亮度差在居中对比下不算变化），
+        // 再稳定在新内容（左上象限补丁：结构与均值都变了）。
+        // 时间戳从 800ms 起：首拍发生在 330ms，冷却期到 730ms；
+        // 若沿用紧邻基线的时间戳，整段动画都落在冷却期内，永远等不到拍摄
+        //（与 `cooldown suppresses immediate retrigger` 的 400ms 冷却语义冲突）。
+        val newPage = gridWithPatch(100, 40, 0, 32, 0, 18)
+        val verdicts = (11 until 11 + 14).map { i ->
+            d.onFrame(if (i < 14) shaking(i) else newPage, 800L + (i - 11) * 33L)
         }
         assertTrue(
             "翻页后应拍到新页，实际 $verdicts",
             verdicts.any { it is Verdict.CaptureNow },
         )
     }
+
+    // —— 真机验收第二轮新增（去亮度漂移的触发判定）——
+    // `ae brightness drift never triggers`：恒定 +4 偏置与 104↔100 交替都不触发
+    //（旧原始 MAD 实测误拍 2 次，即「没有翻页也自己拍摄」根因）。
+    // `whole screen inversion triggers via mean shift`：grid(100) → grid(40) 平场翻转，
+    // 居中 MAD ≈ 0，靠 |均值位移| = 60 > GLOBAL_SHIFT_MAD 触发。
+    // `spatial change with zero mean shift still triggers`：同面积补丁换位（均值位移 0），
+    // 居中 MAD = 60 > CHANGE_MAD 照常触发，证明局部内容检测保留。
 
     @Test
     fun `cooldown suppresses immediate retrigger`() {
@@ -3292,10 +3377,13 @@ Expected: FAIL，`unresolved reference: StabilityDetector` 或 `Verdict`。
 package com.meetnote.recorder.capture
 
 /**
- * 两级判定（spec §6.2）：
- *  1) 画面必须先稳定（连续 [stableFrames] 帧帧间 MAD ≤ [stableMad]），
- *     这样翻页动画（300–500ms）不会被抓到中间态；
- *  2) 稳定后与"上次抓拍帧"的差异必须 > [changeMad]，内容没变就不重拍；
+ * 两级判定（spec §6.2，真机验收第二轮改为去亮度漂移的对比）：
+ *  1) 画面必须先稳定（连续 [stableFrames] 帧帧间**居中 MAD** ≤ [stableMad]），
+ *     这样翻页动画（300–500ms）不会被抓到中间态；曝光闪变/AE 漂移是全局亮度平移，
+ *     居中后 ≈ 0，不再重置稳定计数；
+ *  2) 稳定后与"上次抓拍帧"的对比：居中 MAD > [changeMad]（局部结构变化），
+ *     或帧均值位移 > [globalShiftMad]（整页明暗翻转，平场帧居中 MAD ≈ 0 的兜底），
+ *     两者都不满足才不重拍；
  *  3) 每次抓拍后 [cooldownMs] 内不重复触发，防连拍风暴。
  */
 class StabilityDetector(
@@ -3303,6 +3391,7 @@ class StabilityDetector(
     private val stableFrames: Int = AnalysisConfig.STABLE_FRAMES,
     private val changeMad: Float = AnalysisConfig.CHANGE_MAD,
     private val cooldownMs: Long = AnalysisConfig.COOLDOWN_MS,
+    private val globalShiftMad: Float = AnalysisConfig.GLOBAL_SHIFT_MAD,
 ) {
 
     private var prev: FrameGrid? = null
@@ -3325,7 +3414,7 @@ class StabilityDetector(
             return Verdict.Initialising
         }
 
-        val mad = meanAbsDiff(last, grid)
+        val mad = meanCenteredAbsDiff(last, grid)
         if (mad > stableMad) {
             stableRun = 0
             return Verdict.Stabilising
@@ -3344,8 +3433,11 @@ class StabilityDetector(
             return Verdict.CaptureNow
         }
 
-        val changed = meanAbsDiff(ref, grid)
-        if (changed <= changeMad) return Verdict.NoChange
+        val centeredMad = meanCenteredAbsDiff(ref, grid)
+        // 整页明暗翻转兜底：两帧都是平场时居中 MAD ≈ 0，仅靠结构对比会漏拍；
+        // 全局均值位移超过 GLOBAL_SHIFT_MAD（远高于 AE 反馈漂移）同样视为变化
+        val globalShift = kotlin.math.abs(meanOf(ref) - meanOf(grid))
+        if (centeredMad <= changeMad && globalShift <= globalShiftMad) return Verdict.NoChange
 
         reference = grid
         lastCaptureTs = tsMs
@@ -3374,7 +3466,7 @@ sealed interface Verdict {
 
 Expected: 8 tests PASS。
 
-**若 `content change triggers new capture` 失败**：确认 `reference` 在首拍时被设为当时的画面（`grid(100)`），翻到 `grid(200)` 后 `changed = 100 > CHANGE_MAD`。
+**若 `content change triggers new capture` 失败**：确认 `reference` 在首拍时被设为当时的画面（`grid(100)`），新内容为左上象限补丁后 `centeredMad ≈ 22.5 > CHANGE_MAD`（均值位移 15 > GLOBAL_SHIFT_MAD 也会触发）。
 **若 `cooldown suppresses immediate retrigger` 失败**：检查 `lastCaptureTs` 初始化为 `Long.MIN_VALUE/2` 而非 `Long.MIN_VALUE`（后者做减法会溢出成正数，导致冷却永不生效——这是本类唯一容易写错的点）。
 
 - [ ] **Step 9: 提交**

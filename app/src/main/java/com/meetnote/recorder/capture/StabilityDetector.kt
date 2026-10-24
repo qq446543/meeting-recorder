@@ -1,10 +1,13 @@
 package com.meetnote.recorder.capture
 
 /**
- * 两级判定（spec §6.2）：
- *  1) 画面必须先稳定（连续 [stableFrames] 帧帧间 MAD ≤ [stableMad]），
- *     这样翻页动画（300–500ms）不会被抓到中间态；
- *  2) 稳定后与"上次抓拍帧"的差异必须 > [changeMad]，内容没变就不重拍；
+ * 两级判定（spec §6.2，真机验收第二轮改为去亮度漂移的对比）：
+ *  1) 画面必须先稳定（连续 [stableFrames] 帧帧间**居中 MAD** ≤ [stableMad]），
+ *     这样翻页动画（300–500ms）不会被抓到中间态；曝光闪变/AE 漂移是全局亮度平移，
+ *     居中后 ≈ 0，不再重置稳定计数；
+ *  2) 稳定后与"上次抓拍帧"的对比：居中 MAD > [changeMad]（局部结构变化），
+ *     或帧均值位移 > [globalShiftMad]（整页明暗翻转，平场帧居中 MAD ≈ 0 的兜底），
+ *     两者都不满足才不重拍；
  *  3) 每次抓拍后 [cooldownMs] 内不重复触发，防连拍风暴。
  */
 class StabilityDetector(
@@ -12,6 +15,7 @@ class StabilityDetector(
     private val stableFrames: Int = AnalysisConfig.STABLE_FRAMES,
     private val changeMad: Float = AnalysisConfig.CHANGE_MAD,
     private val cooldownMs: Long = AnalysisConfig.COOLDOWN_MS,
+    private val globalShiftMad: Float = AnalysisConfig.GLOBAL_SHIFT_MAD,
 ) {
 
     private var prev: FrameGrid? = null
@@ -34,7 +38,7 @@ class StabilityDetector(
             return Verdict.Initialising
         }
 
-        val mad = meanAbsDiff(last, grid)
+        val mad = meanCenteredAbsDiff(last, grid)
         if (mad > stableMad) {
             stableRun = 0
             return Verdict.Stabilising
@@ -53,8 +57,11 @@ class StabilityDetector(
             return Verdict.CaptureNow
         }
 
-        val changed = meanAbsDiff(ref, grid)
-        if (changed <= changeMad) return Verdict.NoChange
+        val centeredMad = meanCenteredAbsDiff(ref, grid)
+        // 整页明暗翻转兜底：两帧都是平场时居中 MAD ≈ 0，仅靠结构对比会漏拍；
+        // 全局均值位移超过 GLOBAL_SHIFT_MAD（远高于 AE 反馈漂移）同样视为变化
+        val globalShift = kotlin.math.abs(meanOf(ref) - meanOf(grid))
+        if (centeredMad <= changeMad && globalShift <= globalShiftMad) return Verdict.NoChange
 
         reference = grid
         lastCaptureTs = tsMs

@@ -58,6 +58,100 @@ class SlideDeduplicatorTest {
 
     private fun signals(pixels: IntArray) = SignalBuilder.fromPixels(pixels, w, h)
 
+    /** 同一张幻灯片整体提亮 delta/255（模拟自动曝光漂移；背景钳到 255，内容整体平移） */
+    private fun lifted(pixels: IntArray, delta: Int): IntArray = IntArray(pixels.size) { i ->
+        val c = pixels[i]
+        val r = ((c shr 16) and 0xFF) + delta
+        val g = ((c shr 8) and 0xFF) + delta
+        val b = (c and 0xFF) + delta
+        (0xFF shl 24) or (r.coerceAtMost(255) shl 16) or (g.coerceAtMost(255) shl 8) or b.coerceAtMost(255)
+    }
+
+    /** 内容整体右移 dx 像素（模拟手抖导致的对齐抖动） */
+    private fun shiftedRight(pixels: IntArray, dx: Int): IntArray = IntArray(pixels.size) { i ->
+        val y = i / w
+        val x = i % w
+        pixels[y * w + (x - dx).coerceAtLeast(0)]
+    }
+
+    /** 标准版式 + 一条贴近墨迹阈值的浅灰行（0xB0B0B0 → gray ≈ 0.690 < 0.72 算墨迹，
+     *  +10/255 提亮后 ≈ 0.729 > 0.72 翻出掩码）：建模曝光漂移下的掩码抖动 */
+    private fun slideWithThresholdBand(): IntArray = slideWithTwoBullets().apply {
+        band(this, 260, 270, 60, 460, color = 0xFFB0B0B0.toInt())
+    }
+
+    /** 标准版式整体右移 2px（细格恰好 2×2px，即亚格级错位） */
+    private fun slideWithTwoBulletsShifted(dx: Int): IntArray = shiftedRight(slideWithTwoBullets(), dx)
+
+    /** 深色文字被深色图示整块盖住（DedupeConfig.FG_TOLERANCE KDoc 记录的设计用例）：
+     *  文字 0x1A1A2E（gray ≈ 0.111）被 0x2E4A7A（gray ≈ 0.279）盖住，每格均值差 ≈ 0.17，
+     *  纯绝对差度量实测 0.8514 会误判同页——三条件必须仍判新页（护栏，绝不放宽） */
+    private fun textCoveredByDarkFigure(): IntArray = white().apply {
+        band(this, 30, 70, 60, 740)                                  // 标题原样保留
+        band(this, 120, 240, 60, 740, color = 0xFF2E4A7A.toInt())   // 深色图示盖住两条要点
+    }
+
+    @Test
+    fun `exposure lifted duplicate stays ONE page`() {
+        // 真机验收第二轮根因：自动曝光把整帧抬亮 10/255，旧 FG_TOLERANCE=0.10 下
+        // fgOldSim ≈ 1 − (10/255)/0.10 = 0.61 < 0.85 → 同一张页面被追加成多页
+        val s = SlideDeduplicator.compare(
+            signals(slideWithTwoBullets()),
+            signals(lifted(slideWithTwoBullets(), 10)),
+        )
+        assertTrue(
+            "曝光漂移的重复帧必须判同页：recall=${s.recall} fg=${s.fgOldSim} cov=${s.coverage}",
+            s.isSamePage,
+        )
+    }
+
+    @Test
+    fun `exposure lifted duplicate with ink mask flips stays ONE page`() {
+        // 掩码抖动：贴近 0.72 阈值的浅灰行被 +10/255 抬过阈值、翻出墨迹掩码
+        //（约 32/535 ≈ 6% 墨迹格），recall/coverage 同步落到 ≈ 0.94，
+        // 必须仍 ≥ SAME_RECALL/SAME_COVERAGE；fg 靠放宽后的 FG_TOLERANCE 吸收
+        val s = SlideDeduplicator.compare(
+            signals(slideWithThresholdBand()),
+            signals(lifted(slideWithThresholdBand(), 10)),
+        )
+        assertTrue(
+            "少量掩码翻格必须容忍：recall=${s.recall} 应 ≥ SAME_RECALL=${DedupeConfig.SAME_RECALL}",
+            s.recall >= DedupeConfig.SAME_RECALL,
+        )
+        assertTrue(
+            "掩码抖动的曝光重复帧必须判同页：recall=${s.recall} fg=${s.fgOldSim} cov=${s.coverage}",
+            s.isSamePage,
+        )
+    }
+
+    @Test
+    fun `sub cell alignment jitter stays ONE page`() {
+        // 手抖对齐抖动：内容整体右移 2px（= 1 个细格）。曝光 + 对齐叠加时
+        // 边缘格差值被旧容差线性放大到截断，导致同页被判新页；放宽后必须吸收
+        val s = SlideDeduplicator.compare(
+            signals(slideWithTwoBullets()),
+            signals(slideWithTwoBulletsShifted(2)),
+        )
+        assertTrue(
+            "亚格错位的重复帧必须判同页：recall=${s.recall} fg=${s.fgOldSim} cov=${s.coverage}",
+            s.isSamePage,
+        )
+    }
+
+    @Test
+    fun `dark text covered by dark figure is NOT same page`() {
+        // 护栏（绝不放宽）：整块深色图示盖住深色文字，每格均值差仅 ~0.17。
+        // FG_TOLERANCE 放宽到 0.30 后 fg ≈ 1 − 0.17/0.30 ≈ 0.44 仍必须 < SAME_FG
+        val s = SlideDeduplicator.compare(
+            signals(slideWithTwoBullets()),
+            signals(textCoveredByDarkFigure()),
+        )
+        assertFalse(
+            "被盖住的文字页必须判新页：recall=${s.recall} fg=${s.fgOldSim} cov=${s.coverage}",
+            s.isSamePage,
+        )
+    }
+
     @Test
     fun `identical page is same page with perfect score`() {
         val s = SlideDeduplicator.compare(signals(slideWithTwoBullets()), signals(slideWithTwoBullets()))

@@ -69,6 +69,19 @@ class CapturePipelineTest {
         FrameGrid(AnalysisConfig.W, AnalysisConfig.H,
             IntArray(AnalysisConfig.W * AnalysisConfig.H) { value })
 
+    /** 基底上翻转一块矩形区域的亮度：空间结构变化（整体亮度居中后仍保留差异） */
+    private fun gridWithPatch(base: Int, patch: Int, x0: Int, x1: Int, y0: Int, y1: Int): FrameGrid {
+        val values = IntArray(AnalysisConfig.W * AnalysisConfig.H) { base }
+        for (y in y0 until y1) for (x in x0 until x1) values[y * AnalysisConfig.W + x] = patch
+        return FrameGrid(AnalysisConfig.W, AnalysisConfig.H, values)
+    }
+
+    /** 左右交替的空间抖动（手抖/动画建模）。原用整体亮度交替（100+i%2*40）建模，
+     *  真机验收第二轮改去亮度居中对比后，纯亮度差恒为 0 不再算"抖动"，必须换成空间变化 */
+    private fun shaking(i: Int): FrameGrid =
+        if (i % 2 == 0) gridWithPatch(100, 40, 0, 32, 0, 36)
+        else gridWithPatch(100, 40, 32, 64, 0, 36)
+
     private fun pipeline(
         correct: (Bitmap) -> Correction = ::passthrough,
     ) = CapturePipeline(
@@ -228,8 +241,8 @@ class CapturePipelineTest {
     @Test
     fun `manual shutter fires even while the frame is shaking`() {
         val p = pipeline()
-        // 持续抖动的帧：自动判定永不触发
-        repeat(20) { i -> p.analyze(grid(100 + (i % 2) * 40), i * 33L) }
+        // 持续抖动的帧（空间变化建模）：自动判定永不触发
+        repeat(20) { i -> p.analyze(shaking(i), i * 33L) }
         assertEquals(0, pictureRequests)
 
         p.forceCapture()
@@ -249,8 +262,8 @@ class CapturePipelineTest {
         val p = pipeline()
         // 首帧 Initialising → 发一次"正在观察画面…"
         p.analyze(grid(100), 0L)
-        // 连续 15 个抖动帧（同一 Stabilising 阶段）→ 只应发一次，防逐帧刷屏
-        repeat(15) { i -> p.analyze(grid(100 + (i % 2) * 30), 33L + i * 33L) }
+        // 连续 15 个抖动帧（空间变化建模，同一 Stabilising 阶段）→ 只应发一次，防逐帧刷屏
+        repeat(15) { i -> p.analyze(shaking(i), 33L + i * 33L) }
         // 稳定帧攒满 STABLE_FRAMES 后触发抓拍（inFlight 期间后续帧被丢弃）
         repeat(11) { i -> p.analyze(grid(100), 600L + i * 33L) }
         assertEquals(1, pictureRequests)
