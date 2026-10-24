@@ -15,10 +15,13 @@ object DedupeConfig {
     /** 归一化灰度低于此值视为"有内容（墨迹）" */
     const val INK_THRESHOLD = 0.72f
 
-    /** 同页三条件（同时满足才判同页） */
-    const val SAME_RECALL = 0.90f
+    /**
+     * 同页三条件（同时满足才判同页）：SAME_RECALL/SAME_COVERAGE=0.85 吸收曝光漂移
+     * 引起的墨迹掩码边界翻格（实测夹具 recall≈0.87 落在判别带 (0.85, 0.90)）
+     */
+    const val SAME_RECALL = 0.85f
     const val SAME_FG = 0.85f
-    const val SAME_COVERAGE = 0.90f
+    const val SAME_COVERAGE = 0.85f
 
     /**
      * fgOldSim 的逐格缩放系数（**非死区容差**）：每格相似度 =
@@ -36,7 +39,13 @@ object DedupeConfig {
      * 抖动）必须收敛为最后那次完整拍摄；**真正不同的页面绝不能被合并**——内容
      * 丢失不可恢复，recall/coverage/fg 三条件合取即为此设，护栏用例（换文字、
      * 深色图示盖字、内容变少、空白页）绝不放宽。0.30 时"深色图示盖字"场景
-     * fg ≈ 1 − 0.17/0.30 ≈ 0.44 < 0.85，护栏依旧成立。
+     * 页级实测 fg = 0.7309 < 0.85（0.44 只是变动格的逐格惩罚 1−0.17/0.30，
+     * 约 47.5% 细格有差异），护栏要到 FG_TOLERANCE ≈ 0.54 才会合并——0.30 有余量。
+     *
+     * recall/coverage 同样取 0.85（审查裁定）：吸收曝光漂移引起的墨迹掩码边界翻格
+     *（贴近 0.72 阈值的格子被抬亮后翻出掩码，实测夹具 recall ≈ 0.87 落在判别带
+     * (0.85, 0.90)），护栏用例（换文字 recall=0.7535、盖字 recall=1.0/fg=0.7309）
+     * 全部仍判新页。
      *
      * 真机复核（spec §15 风险 #4，真机验收第二轮后）：用 `adb logcat -s Dedupe`
      * 逐张观察 recall/fg/cov（loopback 已验证可读）；若同一张页面仍分裂成多页，

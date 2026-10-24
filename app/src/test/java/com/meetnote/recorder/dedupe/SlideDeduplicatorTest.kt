@@ -74,10 +74,13 @@ class SlideDeduplicatorTest {
         pixels[y * w + (x - dx).coerceAtLeast(0)]
     }
 
-    /** 标准版式 + 一条贴近墨迹阈值的浅灰行（0xB0B0B0 → gray ≈ 0.690 < 0.72 算墨迹，
-     *  +10/255 提亮后 ≈ 0.729 > 0.72 翻出掩码）：建模曝光漂移下的掩码抖动 */
+    /** 标准版式 + 两条贴近墨迹阈值的浅灰行（0xB0B0B0 → gray ≈ 0.690 < 0.72 算墨迹，
+     *  +10/255 提亮后 ≈ 0.729 > 0.72 翻出掩码）：建模曝光漂移下的掩码抖动。
+     *  行宽刻意不同（60..460 ≈ 32 格、60..600 ≈ 43 格），使 recall/cov 落入
+     *  (0.85, 0.90) 判别带——低于旧阈值 0.90、高于新阈值 0.85（实测 ≈ 0.87） */
     private fun slideWithThresholdBand(): IntArray = slideWithTwoBullets().apply {
         band(this, 260, 270, 60, 460, color = 0xFFB0B0B0.toInt())
+        band(this, 300, 310, 60, 600, color = 0xFFB0B0B0.toInt())
     }
 
     /** 标准版式整体右移 2px（细格恰好 2×2px，即亚格级错位） */
@@ -107,16 +110,24 @@ class SlideDeduplicatorTest {
 
     @Test
     fun `exposure lifted duplicate with ink mask flips stays ONE page`() {
-        // 掩码抖动：贴近 0.72 阈值的浅灰行被 +10/255 抬过阈值、翻出墨迹掩码
-        //（约 32/535 ≈ 6% 墨迹格），recall/coverage 同步落到 ≈ 0.94，
-        // 必须仍 ≥ SAME_RECALL/SAME_COVERAGE；fg 靠放宽后的 FG_TOLERANCE 吸收
+        // 掩码抖动：贴近 0.72 阈值的浅灰行被 +10/255 抬过阈值、翻出墨迹掩码，
+        // recall/cov 落入 (0.85, 0.90) 判别带——正是 SAME_RECALL/SAME_COVERAGE
+        // 由 0.90 降到 0.85 要吸收的墨迹掩码边界翻格；fg 靠 FG_TOLERANCE=0.30 吸收
         val s = SlideDeduplicator.compare(
             signals(slideWithThresholdBand()),
             signals(lifted(slideWithThresholdBand(), 10)),
         )
         assertTrue(
-            "少量掩码翻格必须容忍：recall=${s.recall} 应 ≥ SAME_RECALL=${DedupeConfig.SAME_RECALL}",
+            "夹具必须落在判别带：recall=${s.recall} 应 < 0.90（低于旧阈值才对阈值变更判别）",
+            s.recall < 0.90f,
+        )
+        assertTrue(
+            "掩码翻格 recall=${s.recall} 应 ≥ SAME_RECALL=${DedupeConfig.SAME_RECALL}",
             s.recall >= DedupeConfig.SAME_RECALL,
+        )
+        assertTrue(
+            "掩码翻格 coverage=${s.coverage} 应 ≥ SAME_COVERAGE=${DedupeConfig.SAME_COVERAGE}",
+            s.coverage >= DedupeConfig.SAME_COVERAGE,
         )
         assertTrue(
             "掩码抖动的曝光重复帧必须判同页：recall=${s.recall} fg=${s.fgOldSim} cov=${s.coverage}",
@@ -141,7 +152,8 @@ class SlideDeduplicatorTest {
     @Test
     fun `dark text covered by dark figure is NOT same page`() {
         // 护栏（绝不放宽）：整块深色图示盖住深色文字，每格均值差仅 ~0.17。
-        // FG_TOLERANCE 放宽到 0.30 后 fg ≈ 1 − 0.17/0.30 ≈ 0.44 仍必须 < SAME_FG
+        // 页级实测 fg = 0.7309 仍必须 < SAME_FG（0.44 只是变动格逐格惩罚 1−0.17/0.30；
+        // 护栏合并临界点 TOL ≈ 0.54，0.30 有真实余量）
         val s = SlideDeduplicator.compare(
             signals(slideWithTwoBullets()),
             signals(textCoveredByDarkFigure()),

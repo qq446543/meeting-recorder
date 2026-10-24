@@ -148,18 +148,63 @@ class StabilityDetectorTest {
     @Test
     fun `spatial change with zero mean shift still triggers`() {
         val d = detector()
-        // 基线：稳定 + 首拍（ts 330）
-        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(grid(100), i * 33L) }
-        // 同面积、不同位置的补丁：两帧均值相同（纯结构变化，均值位移为 0），
-        // 证明局部内容变化走居中 MAD 路径照常触发
+        // 基线改为 top（均值 70：补丁 64×18 = 1152/2304 格取 40，其余 100 →
+        // (1152×40 + 1152×100)/2304 = 70）：首拍后 reference = top，均值 70。
+        // 原基线 grid(100) 与新内容均值 70 的位移是 30 > 12 —— 该用例当时无法判别
+        // 「居中变化项」与「均值兜底项」（突变体删掉居中项也能触发），故重定基线。
         val top = gridWithPatch(100, 40, 0, 64, 0, 18)
         val bottom = gridWithPatch(100, 40, 0, 64, 18, 36)
+        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(top, i * 33L) }
+        // 动画段交替 top/bottom：两者均值都是 70，全程 globalShift = 0；
+        // 帧间居中 MAD = 60 > 6 阻断稳定计数；落定 bottom 后
+        // centeredMad(ref=top, bottom) = 60 > 2.5 而 |70 − 70| = 0 ≤ 12
+        // —— 只能靠居中变化项触发（均值位移不成立时的判别用例）
         val verdicts = (11 until 11 + 14).map { i ->
             d.onFrame(if (i < 14) (if (i % 2 == 0) top else bottom) else bottom, 800L + (i - 11) * 33L)
         }
         assertTrue(
             "零均值位移的结构变化应触发拍摄，实际 $verdicts",
             verdicts.any { it is Verdict.CaptureNow },
+        )
+    }
+
+    @Test
+    fun `alternating brightness still stabilises`() {
+        val d = detector()
+        // 100↔107 交替：原始帧间差 7 > STABLE_MAD 6 —— 稳定门若按原始 MAD 将永不稳定；
+        // 去亮度居中后帧间差 = 0 → 必须在 STABLE_FRAMES+1 帧内完成首拍
+        val verdicts = (0 until AnalysisConfig.STABLE_FRAMES + 1).map { i ->
+            d.onFrame(grid(if (i % 2 == 0) 100 else 107), i * 33L)
+        }
+        assertTrue(
+            "交替亮度应稳定并首拍，实际 $verdicts",
+            verdicts.last() is Verdict.CaptureNow,
+        )
+        // 首拍 ref = grid(100)，后续 grid(107) 均值位移 7 ≤ GLOBAL_SHIFT_MAD 12 → 不得连拍风暴
+        val rest = (AnalysisConfig.STABLE_FRAMES + 1 until AnalysisConfig.STABLE_FRAMES + 31)
+            .map { i -> d.onFrame(grid(if (i % 2 == 0) 100 else 107), i * 33L) }
+        assertTrue(
+            "首拍后交替亮度不应重复触发，实际 ${rest.count { it is Verdict.CaptureNow }} 次",
+            rest.none { it is Verdict.CaptureNow },
+        )
+    }
+
+    @Test
+    fun `slow ae ramp within band never triggers`() {
+        val d = detector()
+        // 基线：稳定 + 首拍（grid(100)，ts 330）
+        (0 until AnalysisConfig.STABLE_FRAMES + 1).forEach { i -> d.onFrame(grid(100), i * 33L) }
+        // +1 灰阶/帧 的缓变 AE 斜坡爬到 +4 并保持：居中 MAD 恒 0，
+        // 均值位移 ≤ 4 ≤ GLOBAL_SHIFT_MAD 12 → 永不触发
+        //（位移累积 >12 会由均值兜底触发，属已裁定行为——本用例只锁定带内不触发）
+        val frames = buildList {
+            for (v in 101..104) add(grid(v))
+            repeat(20) { add(grid(104)) }
+        }
+        val verdicts = frames.mapIndexed { idx, g -> d.onFrame(g, 800L + idx * 33L) }
+        assertTrue(
+            "带内缓变 AE 斜坡不应触发拍摄，实际触发 ${verdicts.count { it is Verdict.CaptureNow }} 次",
+            verdicts.none { it is Verdict.CaptureNow },
         )
     }
 

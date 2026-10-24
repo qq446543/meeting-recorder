@@ -17,7 +17,7 @@
 - OpenCV 依赖 `org.opencv:opencv:4.11.0`；`app/build.gradle.kts` 必须声明 `ndk { abiFilters += "arm64-v8a" }`（一加 13 为 arm64-v8a，砍掉其余 ABI）。
 - minSdk 26、targetSdk 35、compileSdk 36；targetSdk 固定 35 以规避更高版本后台限制。
 - 不申请 `INTERNET` 权限（应用完全离线）；不申请任何存储权限（文件存 app 私有目录，导出走 SAF）。
-- 同页去重采用方向性三判据（见 Task 5 与 spec §7 修订版）：`recall ≥ 0.90`、`fgOldSim ≥ 0.85`、`coverage ≥ 0.90` 三者同时满足才判同页；阈值全部集中在 `DedupeConfig`，不得散落魔法数。任何改动必须先让 `SlideDeduplicatorTest` 的"同页累积内容"用例通过。
+- 同页去重采用方向性三判据（见 Task 5 与 spec §7 修订版）：`recall ≥ 0.85`、`fgOldSim ≥ 0.85`、`coverage ≥ 0.85` 三者同时满足才判同页；阈值全部集中在 `DedupeConfig`，不得散落魔法数。任何改动必须先让 `SlideDeduplicatorTest` 的"同页累积内容"用例通过。
 - 稳定判定 `stableMad = 6.0f`、连续 `10` 帧、变化阈值 `changeMad = 2.5f`、抓拍冷却 `400ms`、整页明暗翻转兜底 `globalShiftMad = 12.0f`，全部集中在 `StabilityDetector` 的构造参数默认值（真机验收第一轮调参：宁可多拍不可漏拍，漏拍不可恢复，多拍由同页去重兜底；真机验收第二轮：稳定/变化判定改用去整体亮度居中 MAD `meanCenteredAbsDiff`——曝光闪变/AE 漂移不再算变化也不再重置稳定计数，`GLOBAL_SHIFT_MAD` 兜底整页明暗翻转，同页去重放宽后兜底网已足够可靠）。
 - 文档矫正输出宽度上限 `1600px`；质量门 `laplacianVar ≥ 60`、平均亮度 `25–235`、宽高比 `0.6–2.5`。
 - 所有纯逻辑（算法、判定、几何）必须是不依赖 Android 框架的 Kotlin 对象/类，放在 JVM 单元测试可覆盖的路径下；`Bitmap`/`CameraX`/`Room` 仅作为薄适配层。
@@ -2475,7 +2475,7 @@ recall     = 旧页墨迹格子在新帧中仍是墨迹的比例   → 累积内
 fgOldSim   = 旧页墨迹区域的细网格灰度相似度       → 换了文字会明显下降
 coverage   = 新帧墨迹量 / 旧页墨迹量              → 排除"新帧内容变少"（动画中间态）
 
-同页 ⟺ recall ≥ 0.90 且 fgOldSim ≥ 0.85 且 coverage ≥ 0.90
+同页 ⟺ recall ≥ 0.85 且 fgOldSim ≥ 0.85 且 coverage ≥ 0.85
 否则 → 新页。方向（真机验收第二轮，用户裁定反转）：近似重复帧（同一张页面的
 曝光/对齐抖动）必须收敛为一页——只保留最后完整的那张（覆盖语义）；真正不同的
 页面绝不能被合并（recall/coverage/fg 合取护栏，内容丢失不可恢复，护栏用例绝不放宽）。
@@ -2492,7 +2492,7 @@ coverage   = 新帧墨迹量 / 旧页墨迹量              → 排除"新帧内
 **Interfaces:**
 - Consumes: 无（纯 Kotlin + `android.graphics.Color` 之外无依赖；像素用 `IntArray` 表示，JVM 可跑）
 - Produces:
-  - `object DedupeConfig`：`INK_W=64`、`INK_H=48`、`FINE_W=400`、`FINE_H=225`、`INK_THRESHOLD=0.72f`、`SAME_RECALL=0.90f`、`SAME_FG=0.85f`、`SAME_COVERAGE=0.90f`
+  - `object DedupeConfig`：`INK_W=64`、`INK_H=48`、`FINE_W=400`、`FINE_H=225`、`INK_THRESHOLD=0.72f`、`SAME_RECALL=0.85f`、`SAME_FG=0.85f`、`SAME_COVERAGE=0.85f`
   - `data class ImageSignals(inkMask: ByteArray, inkCount: Int, fineGray: FloatArray)`
   - `object SignalBuilder { fun fromPixels(pixels: IntArray, width: Int, height: Int): ImageSignals }`（像素为 ARGB `Int`，灰度归一化到 0..1）
   - `data class Similarity(recall: Float, fgOldSim: Float, coverage: Float, score: Float, val isSamePage: Boolean)`
@@ -2570,7 +2570,7 @@ class SlideDeduplicatorTest {
     // slideWithThresholdBand(贴近 0.72 阈值的浅灰行，建模掩码抖动)、
     // textCoveredByDarkFigure(深色图示盖字护栏)。
     // 新用例：`exposure lifted duplicate stays ONE page`(fg≈0.869)、
-    // `exposure lifted duplicate with ink mask flips stays ONE page`(recall≈0.940)、
+    // `exposure lifted duplicate with ink mask flips stays ONE page`(recall≈0.87，判别带)、
     // `sub cell alignment jitter stays ONE page`(2px 错位 fg≈0.996)、
     // `dark text covered by dark figure is NOT same page`(护栏，fg≈0.731 < 0.85)。
 
@@ -2677,10 +2677,10 @@ object DedupeConfig {
     /** 归一化灰度低于此值视为"有内容（墨迹）" */
     const val INK_THRESHOLD = 0.72f
 
-    /** 同页三条件（同时满足才判同页） */
-    const val SAME_RECALL = 0.90f
+    /** 同页三条件（同时满足才判同页）：recall/coverage 0.85 吸收曝光漂移掩码翻格 */
+    const val SAME_RECALL = 0.85f
     const val SAME_FG = 0.85f
-    const val SAME_COVERAGE = 0.90f
+    const val SAME_COVERAGE = 0.85f
 
     /**
      * fgOldSim 的逐格缩放系数（**非死区容差**）：每格相似度 =
@@ -2698,7 +2698,8 @@ object DedupeConfig {
      * 抖动）必须收敛为最后那次完整拍摄；**真正不同的页面绝不能被合并**——内容
      * 丢失不可恢复，recall/coverage/fg 三条件合取即为此设，护栏用例（换文字、
      * 深色图示盖字、内容变少、空白页）绝不放宽。0.30 时"深色图示盖字"场景
-     * fg ≈ 1 − 0.17/0.30 ≈ 0.44 < 0.85，护栏依旧成立。
+     * 页级实测 fg = 0.7309 < 0.85（0.44 只是变动格的逐格惩罚 1−0.17/0.30，
+     * 约 47.5% 细格有差异），护栏要到 FG_TOLERANCE ≈ 0.54 才会合并——0.30 有余量。
      *
      * 真机复核（spec §15 风险 #4，真机验收第二轮后）：用 `adb logcat -s Dedupe`
      * 逐张观察 recall/fg/cov（loopback 已验证可读）；若同一张页面仍分裂成多页，
@@ -2937,7 +2938,7 @@ Expected: 全绿（Task 2–5 累计 27+ 用例）。
 
 `docs/superpowers/specs/2026-10-22-meeting-recorder-design.md` 的 §5 数据流与 §7
 已在计划阶段更新为本任务的方向性三判据版本。本步骤只做核对：
-打开该文件确认 §7 表格里的三个阈值（0.90 / 0.85 / 0.90）与 `DedupeConfig` 完全一致，
+打开该文件确认 §7 表格里的三个阈值（0.85 / 0.85 / 0.85）与 `DedupeConfig` 完全一致，
 若执行中调整过阈值，把 spec §7 与本计划 Global Constraints 一并改过来，保持三处同步。
 
 - [ ] **Step 10: 提交**
