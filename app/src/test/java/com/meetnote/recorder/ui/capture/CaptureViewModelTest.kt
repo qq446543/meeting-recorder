@@ -1,6 +1,8 @@
 package com.meetnote.recorder.ui.capture
 
 import com.meetnote.recorder.audio.RecordingState
+import com.meetnote.recorder.capture.Point2
+import com.meetnote.recorder.capture.Quad
 import com.meetnote.recorder.audio.RecordingStatus
 import com.meetnote.recorder.data.MeetingRepository
 import com.meetnote.recorder.data.MeetingStats
@@ -110,6 +112,18 @@ class CaptureViewModelTest {
         vm.onPipelineStatus("已拍第 4 页", quad = null, degraded = false, imageW = 1920, imageH = 1080)
         assertEquals(1920, vm.ui.value.imageW)
         assertEquals(1080, vm.ui.value.imageH)
+
+        // 真机验收第一轮修复：带框的命名调用先记录框与尺寸
+        val box = Quad(Point2(10f, 20f), Point2(300f, 20f), Point2(310f, 250f), Point2(5f, 255f))
+        vm.onPipelineStatus("翻页已确认", quad = box, degraded = false, imageW = 1920, imageH = 1080)
+        assertEquals(box, vm.ui.value.quad)
+
+        // 阶段状态行（真机验收裁定：流水线阶段行随行携带快照框，无框时才为 null）：
+        // 3 参形态无尺寸形参 → 尺寸沿用 VM 的 null-keep，绿框照常记录不清除
+        vm.onPipelineStatus("画面已稳定，等待翻页", quad = box, degraded = false)
+        assertEquals(1920, vm.ui.value.imageW)
+        assertEquals(1080, vm.ui.value.imageH)
+        assertEquals(box, vm.ui.value.quad)
     }
 
     @Test

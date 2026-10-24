@@ -20,7 +20,7 @@ data class PipelineStatus(
     val quad: Quad? = null,
     val degraded: Boolean = false,
     val shot: ShotResult? = null,
-    /** 拍摄原图尺寸（quad 在原图坐标系；叠加层据此换算坐标）。阶段类状态不带尺寸 → null */
+    /** 拍摄原图尺寸（quad 在原图坐标系；叠加层据此换算坐标）。流水线持叠加层快照，每条状态随行携带 */
     val imageW: Int? = null,
     val imageH: Int? = null,
 )
@@ -49,6 +49,22 @@ class CapturePipeline(
     @Volatile private var paused = false
     @Volatile private var inFlight = false
     private var detectFailures = 0
+
+    /** 叠加层快照（真机验收审查裁定：流水线持有，每条状态行完整携带）。
+     *  [analyze]/emitStage 在相机分析线程读它，[process] 在 io 协程写它 → 必须 @Volatile */
+    private data class OverlaySnapshot(val quad: Quad?, val degraded: Boolean, val w: Int, val h: Int)
+
+    @Volatile private var snapshot: OverlaySnapshot? = null
+
+    /** 所有状态行统一从快照取叠加层：绿框/降级/原图尺寸随行，阶段行不再抹掉 UI 绿框 */
+    private fun status(text: String, shot: ShotResult? = null) = PipelineStatus(
+        text = text,
+        quad = snapshot?.quad,
+        degraded = snapshot?.degraded == true,
+        shot = shot,
+        imageW = snapshot?.w,
+        imageH = snapshot?.h,
+    )
 
     /** 最近一页的信号缓存，避免每张都解码上一张图 */
     private var lastSignals: ImageSignals? = null
@@ -82,7 +98,7 @@ class CapturePipeline(
         }
         if (text == lastStage) return
         lastStage = text
-        onStatus(PipelineStatus(text))
+        onStatus(status(text))
     }
 
     /** 手动快门：跳过稳定判定直接拍 */
@@ -95,14 +111,15 @@ class CapturePipeline(
     fun onPicture(bitmap: Bitmap?) {
         if (bitmap == null) {
             inFlight = false
-            onStatus(PipelineStatus("拍摄失败，继续监测…"))
+            // 拍摄失败时屏幕还在原位：沿用当前快照，绿框保持可见
+            onStatus(status("拍摄失败，继续监测…"))
             return
         }
         scope.launch(ioContext) {
             try {
                 process(bitmap)
             } catch (t: Throwable) {
-                onStatus(PipelineStatus("处理失败，继续监测…"))
+                onStatus(status("处理失败，继续监测…"))
             } finally {
                 inFlight = false
             }
@@ -114,6 +131,9 @@ class CapturePipeline(
         val correction = correct(source)
         detectFailures = if (correction.degraded) detectFailures + 1 else 0
         val degraded = detectFailures >= DEGRADE_AFTER
+        // 叠加层快照：本帧矫正结果即当前屏幕四边形。后续所有状态行（含质量门拒绝、
+        // 成功、失败）都从这里取叠加层，阶段行不会把 UI 绿框抹掉（真机验收审查裁定）
+        snapshot = OverlaySnapshot(correction.quad, degraded, source.width, source.height)
         val image = correction.bitmap
 
         // 2. 质量门：不过就丢弃，但必须可见（spec §12 禁止静默阻断），并带上原图尺寸供绿框换算
@@ -125,15 +145,7 @@ class CapturePipeline(
         val lap = QualityGate.laplacianVariance(gray, image.width, image.height)
         if (!QualityGate.accept(lap, QualityGate.meanLuma(gray), aspect)) {
             // 画面模糊/过亮/比例异常：丢弃候选、继续监测，让拍摄者知道这帧没算数
-            onStatus(
-                PipelineStatus(
-                    text = "画面模糊或过亮，已跳过，继续监测…",
-                    quad = correction.quad,
-                    degraded = degraded,
-                    imageW = source.width,
-                    imageH = source.height,
-                ),
-            )
+            onStatus(status("画面模糊或过亮，已跳过，继续监测…"))
             return
         }
 
@@ -179,14 +191,10 @@ class CapturePipeline(
         lastSignals = signals
 
         onStatus(
-            PipelineStatus(
+            status(
                 text = if (result.overwritten) "已更新第 ${result.index} 页"
                 else "已拍第 ${result.index} 页",
-                quad = correction.quad,
-                degraded = degraded,
                 shot = result,
-                imageW = source.width,
-                imageH = source.height,
             ),
         )
     }

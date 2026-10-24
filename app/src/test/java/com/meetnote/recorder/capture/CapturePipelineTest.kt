@@ -279,4 +279,45 @@ class CapturePipelineTest {
         assertEquals(480, st.imageW)
         assertEquals(270, st.imageH)
     }
+
+    @Test
+    fun `stage lines keep the green box overlay after capture`() {
+        // 矫正器始终给出屏幕四边形；degraded=true 用于在第 3 次拍摄时攒满降级阈值（DEGRADE_AFTER=3）
+        val box = Quad(Point2(10f, 20f), Point2(300f, 20f), Point2(310f, 250f), Point2(5f, 255f))
+        val p = pipeline(correct = { bmp -> Correction(bmp, box, degraded = true, reason = "未检测到屏幕边缘") })
+
+        // ① 稳定触发拍摄：成功状态必须携带绿框与原图尺寸
+        feedStable(p)
+        assertEquals(1, pictureRequests)
+        p.onPicture(striped(480, 270))
+        val success = statuses.last()
+        assertEquals("已拍第 1 页", success.text)
+        assertEquals(box, success.quad)
+        assertEquals(480, success.imageW)
+        assertEquals(270, success.imageH)
+
+        // ② 画面未变 → 阶段行"画面已稳定，等待翻页"：绿框与原图尺寸必须继续随行（物理屏幕位置没变）
+        repeat(11) { i -> p.analyze(grid(100), 10_000L + i * 33L) }
+        val stage = statuses.last()
+        assertEquals("画面已稳定，等待翻页", stage.text)
+        assertEquals("阶段行不得抹掉绿框", box, stage.quad)
+        assertEquals(480, stage.imageW)
+        assertEquals(270, stage.imageH)
+
+        // ③ 连续 3 次降级矫正攒满 DEGRADE_AFTER：degraded 也必须随阶段行保留
+        feedStable(p, startTs = 20_000L, value = 200)
+        p.onPicture(striped(480, 270))          // 第 2 次：detectFailures=2 → 尚未降级
+        assertFalse(statuses.last().degraded)
+        feedStable(p, startTs = 30_000L, value = 150)
+        p.onPicture(striped(480, 270))          // 第 3 次：detectFailures=3 → 降级
+        assertTrue("连续 3 次检测失败应进入降级提示", statuses.last().degraded)
+
+        repeat(11) { i -> p.analyze(grid(150), 40_000L + i * 33L) }
+        val stage2 = statuses.last()
+        assertEquals("画面已稳定，等待翻页", stage2.text)
+        assertTrue("降级标记必须随阶段行保留", stage2.degraded)
+        assertEquals(box, stage2.quad)
+        assertEquals(480, stage2.imageW)
+        assertEquals(270, stage2.imageH)
+    }
 }

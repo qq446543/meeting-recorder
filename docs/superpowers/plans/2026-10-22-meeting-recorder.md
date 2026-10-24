@@ -5268,12 +5268,17 @@ class CapturePipelineTest {
     }
 
     @Test
-    fun `quality gate silently drops bad frames`() {
+    fun `quality gate drops bad frames and reports the skip`() = runBlocking {
         val p = pipeline()
-        p.onPicture(flat())                // 纯灰图，清晰度为 0
+        p.onPicture(flat(320, 180))         // 纯灰图，清晰度为 0
 
+        // 原意图保留：坏帧绝不落库；新增（真机验收裁定）：跳过必须可见，且带上原图尺寸
         assertEquals(0, pageCount())
-        assertTrue(statuses.isEmpty())
+        val st = statuses.single()
+        assertEquals("画面模糊或过亮，已跳过，继续监测…", st.text)
+        assertFalse(st.degraded)
+        assertEquals(320, st.imageW)
+        assertEquals(180, st.imageH)
     }
 
     @Test
@@ -5525,7 +5530,7 @@ Expected: 8 tests PASS。
 
 **若 `different looking slide appends page two` 失败**：调 `striped` 与 `other` 的对比度，或确认 `compare` 的 `coverage/recall` 确实不同。若仍同页，把 `other` 改为大面积黑底 + 白色对角线（对比更极端）。
 
-**若 `quality gate silently drops bad frames` 反而写进了页面**：纯灰图拉普拉斯为 0，必被拒；若被放行，检查 `QualityGate.accept` 的参数顺序（lap, mean, aspect）没有传反。
+**若 `quality gate drops bad frames and reports the skip` 反而写进了页面**：纯灰图拉普拉斯为 0，必被拒；若被放行，检查 `QualityGate.accept` 的参数顺序（lap, mean, aspect）没有传反。
 
 - [ ] **Step 8: 把流水线接进拍摄页**
 
