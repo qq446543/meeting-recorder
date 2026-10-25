@@ -7252,7 +7252,7 @@ $keytool = "$env:JAVA_HOME\bin\keytool.exe"
 & $keytool -genkeypair -v `
   -keystore "C:\Users\Administrator\Documents\默认项目\MeetingRecorder\meetingrecorder.jks" `
   -alias meetnote -keyalg RSA -keysize 2048 -validity 10000 `
-  -storepass "MeetNote2026" -keypass "MeetNote2026" `
+  -storepass "&lt;本地填写，见本机 keystore.properties（不入库）&gt;" -keypass "&lt;本地填写，见本机 keystore.properties（不入库）&gt;" `
   -dname "CN=Meeting Recorder, OU=Personal, O=Personal, L=Beijing, ST=Beijing, C=CN"
 ```
 
@@ -7262,9 +7262,9 @@ Expected: `密钥库已存在`/`生成密钥` 提示，且 `.jks` 文件生成�
 
 ```properties
 storeFile=meetingrecorder.jks
-storePassword=MeetNote2026
+storePassword=&lt;本地填写，见本机 keystore.properties（不入库）&gt;
 keyAlias=meetnote
-keyPassword=MeetNote2026
+keyPassword=&lt;本地填写，见本机 keystore.properties（不入库）&gt;
 ```
 
 `app/build.gradle.kts` 顶部加 import 与签名配置：
